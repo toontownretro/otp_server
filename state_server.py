@@ -165,14 +165,15 @@ class StateServer:
                     
                     # We did not implement airecv fields yet so let's do it.
                     for senderId in do.senders:
-                        if not senderId in channels:
-                            continue
-                        # Check for if the Uberdog should recieve the field,
-                        if uberDog and uberDog.getPrimaryChannel() == senderId and \
-                            (field.isDb() or not field.isClrecv() and not field.isClsend() and not field.isAirecv()):
-                            continue
+                        # First check for if the Uberdog should recieve the field,
+                        # If not. Remove it.
+                        if uberDog and (field.isClrecv() or field.isOwnrecv() or field.isAirecv()):
+                            uberDogChannel = uberDog.getPrimaryChannel()
+                            # Remove the uberdog channel if it's in the channels.
+                            if uberDogChannel in channels:
+                                channels.remove(uberDogChannel)
                         # If the AI isn't going to recieve it, Remove it.
-                        if not field.isAirecv():
+                        if senderId in channels and not field.isAirecv():
                             channels.remove(senderId)
                             
                     # Don't send it back to yourself you fucking dumbass!
