@@ -218,7 +218,7 @@ class ClientAgent:
                 if channel == client.avatarId + (1 << 32):
                     if code == STATESERVER_OBJECT_UPDATE_FIELD:
                         client.sendMessage(CLIENT_OBJECT_UPDATE_FIELD, datagram)
+                    elif code == CLIENT_SET_FIELD_SENDABLE:
+                        print("Recieved unimplemented messsage type CLIENT_SET_FIELD_SENDABLE.")
                     else:
                         raise Exception("Unexpected message on Puppet channel (code %d)" % code)
-                        
-                        

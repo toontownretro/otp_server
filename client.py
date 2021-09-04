@@ -795,8 +795,11 @@ class Client:
         """
         Send a datagram
         """
-        self.sock.send(struct.pack("<H", dg.getLength()))
-        self.sock.send(bytes(dg))
+        try:
+            self.sock.send(struct.pack("<H", dg.getLength()))
+            self.sock.send(bytes(dg))
+        except:
+            print("Tried to send connection to client, But connection was closed!")
 
 
     def hasInterest(self, parentId, zoneId):
