@@ -33,6 +33,9 @@ class Client:
         # we're just gonna use a set
         self.__interestCache = set()
         
+        # This is used to store the clsend field overrides sent by CLIENT_SET_FIELD_SENDABLE.
+        self.__doId2ClsendOverrides = {}
+        
         
     def disconnect(self, index=None):
         datagram = Datagram()
@@ -516,7 +519,8 @@ class Client:
                 print("Avatar %d attempted to update a field but it was not found!" % (self.avatarId))
                 return
 
-            if not (field.isClsend() or (field.isOwnsend() and do.doId == self.avatarId)): # We probably should check for owner stuff too but Toontown does not implement it
+            if (doId in self.__doId2ClsendOverrides and not fieldId in self.__doId2ClsendOverrides[doId]) and \
+               not (field.isClsend() or (field.isOwnsend() and do.doId == self.avatarId)): # We probably should check for owner stuff too but Toontown does not implement it
                 print("Avatar %d attempted to update a field but they don't have the rights!" % (self.avatarId))
                 return
 
@@ -820,6 +824,9 @@ class Client:
                 self.__interestCache.add((parentId, zoneId))
 
         return False
+        
+    def setClsendFields(self, doId, fields):
+        self.__doId2ClsendOverrides[doId] = fields
 
     def sendObjects(self, parentId, zones):
         objects = []

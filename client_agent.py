@@ -1,4 +1,4 @@
-from panda3d.core import Datagram, Filename
+from panda3d.core import Datagram, DatagramIterator, Filename
 from dnaparser import loadDNAFile, DNAStorage
 from msgtypes import *
 import socket
@@ -219,6 +219,19 @@ class ClientAgent:
                     if code == STATESERVER_OBJECT_UPDATE_FIELD:
                         client.sendMessage(CLIENT_OBJECT_UPDATE_FIELD, datagram)
                     elif code == CLIENT_SET_FIELD_SENDABLE:
-                        print("Recieved unimplemented messsage type CLIENT_SET_FIELD_SENDABLE.")
+                        print("Recieved messsage type CLIENT_SET_FIELD_SENDABLE.")
+                        
+                        dgi = DatagramIterator(datagram)
+                        
+                        doId = dgi.getUint32()
+                        
+                        fields = []
+                        
+                        # We do it like this because we don't add a size check.
+                        while dgi.getRemainingSize() >= 2:
+                            fields.append(dgi.getUint16())
+                        
+                        # Set the clsend fields for object in our client.
+                        client.setClsendFields(doId, fields)
                     else:
                         raise Exception("Unexpected message on Puppet channel (code %d)" % code)
