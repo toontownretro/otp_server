@@ -1,4 +1,6 @@
-from panda3d.core import Filename
+import os, socket, select
+
+from panda3d.core import DSearchPath, Filename, VirtualFileSystem
 from panda3d.direct import DCFile
 
 from message_director import MessageDirector, MDClient
@@ -6,9 +8,6 @@ from state_server import StateServer
 from client_agent import ClientAgent
 from client import Client
 from database_server import DatabaseServer
-
-import socket
-import select
 
 class PyOTP:
     def __init__(self):
@@ -21,7 +20,26 @@ class PyOTP:
         self.dclassesByName = {}
         self.dclassesByNumber = {}
         
-        self.readDCFile(["../otp/src/configfiles/otp.dc", "../toontown/src/configfiles/toon.dc"])
+        vfs = VirtualFileSystem.getGlobalPtr()
+        
+        # Look for our dc file locations and read them in.
+        searchPath = DSearchPath()
+        # In other environments, including the dev environment, look here:
+        otpbase = os.path.expandvars('$OTP') or './otp'
+        searchPath.appendDirectory(Filename.fromOsSpecific(os.path.expandvars(otpbase+'/src/configfiles')))
+        toontownbase = os.path.expandvars('$TOONTOWN') or './toontown'
+        searchPath.appendDirectory(Filename.fromOsSpecific(os.path.expandvars(toontownbase+'/src/configfiles')))
+        
+        # Resolve the location of our otp.dc file.
+        otpDC = Filename("otp.dc")
+        vfs.resolveFilename(otpDC, searchPath)
+        
+        # Resolve the location of our toon.dc file.
+        toonDC = Filename("toon.dc")
+        vfs.resolveFilename(toonDC, searchPath)
+        
+        # Read our DC files.
+        self.readDCFile([otpDC, toonDC])
         
         # "Handlers"
         self.messageDirector = MessageDirector(self)

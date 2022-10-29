@@ -1,11 +1,11 @@
+import math, os, struct, time, pytz, traceback
+from datetime import datetime, timezone
+
 from panda3d.core import Datagram, DatagramIterator
 from panda3d.direct import DCPacker
 from zone_util import getCanonicalZoneId, getTrueZoneId
 from msgtypes import *
-import struct
-import math
-import os
-import time
+from security import *
 
 class Client:
     def __init__(self, agent, sock, addr):
@@ -26,6 +26,9 @@ class Client:
         # Account stuff
         self.avatarId = 0
         self.account = None
+        
+        # This is for if we're authorized or not yet. Some messages can only be sent when authorized.
+        self.__authorized = False
 
         # Cache for interests, so we don't have to iterate through all interests
         # every time an object updates.
@@ -35,6 +38,7 @@ class Client:
 
         # This is used to store the clsend field overrides sent by CLIENT_SET_FIELD_SENDABLE.
         self.__doId2ClsendOverrides = {}
+<<<<<<< HEAD
 
 
     def disconnect(self, index=None):
@@ -45,6 +49,22 @@ class Client:
 
         self.sendMessage(CLIENT_GO_GET_LOST, datagram)
 
+=======
+        
+        
+    def disconnect(self, index=None, reason=""):
+        datagram = Datagram()
+        if index:
+            datagram.addUint16(index)
+            datagram.addString(reason)
+            
+        # Tell our connected client to go get lost.
+        self.sendMessage(CLIENT_GO_GET_LOST, datagram)
+        
+        # We are no longer authorized.
+        self.__authorized = False
+        
+>>>>>>> 22caedd (Initial proper PlayToken support.)
         # Now we disconnect the client
         self.sock.close()
 
@@ -58,12 +78,20 @@ class Client:
     def onAvatarDelete(self):
         # Our avatar got deleted
         self.avatarId = 0
+<<<<<<< HEAD
         self.disconnect(153)
 
+=======
+        self.disconnect(153, "Lost connection.")
+        
+>>>>>>> 22caedd (Initial proper PlayToken support.)
     def onLost(self):
         # We remove the avatar if we're disconnecting. Bye!
         if self.avatarId:
             self.removeAvatar()
+
+        # We are no longer authorized.
+        self.__authorized = False
 
     def onData(self, data):
         self.buffer += data
@@ -77,21 +105,237 @@ class Client:
 
             self.onDatagram(Datagram(bytes(packet)))
 
-
     def onDatagram(self, msgDg):
         di = DatagramIterator(msgDg)
-
-        msgType = di.getUint16()
-
+        
+        try:
+            msgType = di.getUint16()
+        except:
+            print("Received truncated datagram from connection: %s:%d!" % (self.addr[0], self.addr[1]))
+            self.disconnect(200) # Internal error in the clients state machine.  Contact Developers for correction.
+            
+        # If it's a heartbeat, Respond directly. Otherwise handle our datagram.
         if msgType == CLIENT_HEARTBEAT:
             # TODO: Keep track of heartbeats.
             self.sendMessage(CLIENT_HEARTBEAT, msgDg)
-
-        elif msgType == CLIENT_DISCONNECT:
+        else:
+            # Handle the datagram.
+            self.handle_datagram(msgType, di)
+            
+    def handle_datagram(self, msgType, di):
+        if msgType == CLIENT_DISCONNECT:
             # Luckily for us, Super simple.
             self.disconnect()
+            
+        elif msgType == CLIENT_LOGIN_2:
+            print("CLIENT_LOGIN_2")
+            playToken = di.getString()
+            serverVersion = di.getString()
+            hashVal = di.getUint32()
+            tokenType = di.getUint32()
+            validateDownload = di.getString()
+            wantMagicWords = di.getString()
+            
+            tokenInfo = self.parse_play_token(playToken.encode("utf-8"), tokenType)
+            
+            # These arguments are things we need from our token read response.
+            returnCode = tokenInfo["returnCode"]
+            responseStr = tokenInfo["respString"]
+            accountDoId = None
+            accountName = ""
+            createFriendsWithChat = "YES"
+            chatCodeCreationRule = "YES"
+            userName = ""
+            
+            if tokenInfo["accountName"] != None: accountName = tokenInfo["accountName"]
+            
+            if tokenInfo["accountNumber"] != None: accountDoId = tokenInfo["accountNumber"]
+            
+            createFriendsWithChat = "YES" if tokenInfo["createFriendsWithChat"] else "NO"
+            
+            chatCodeCreationRule = "YES" if tokenInfo["chatCodeCreationRule"] else "NO"
 
-        elif msgType == CLIENT_CREATE_AVATAR:
+            whiteListChat = "YES" if tokenInfo["whitelistChat"] else "NO"
+            
+            if tokenInfo["userName"] != None:
+                userName = tokenInfo["userName"]
+                
+                accFile = os.path.join("database", userName + ".txt")
+                if os.path.isfile(accFile):
+                    with open(accFile, "r") as f:
+                        self.account = self.databaseServer.loadDatabaseObject(int(f.read()))
+                        accountDoId = self.account.doId
+                else:
+                    # We create an Account
+                    self.account = self.databaseServer.createDatabaseObject("Account")
+                    accountDoId = self.account.doId
+                    with open(accFile, "w") as f:
+                        f.write(str(self.account.doId))
+                        
+            # Get our current time in UTC.
+            now = datetime.now()
+            #now = now.astimezone(tz=pytz.UTC)
+            
+            # By default, We say it's existed for 0 days. 
+            accountDays = 0
+                 
+            # If we found the account then we'll do required field checks.
+            if self.account:
+                 # Check if the account has the creation date.
+                 if not self.account.fields.get("CREATED", None):
+                    self.account.update("CREATED", now.strftime("%Y-%m-%d %H:%M:%S"))
+
+                 # Update our last login time.
+                 self.account.update("LAST_LOGIN", now.strftime("%Y-%m-%d %H:%M:%S"))
+                 
+                 # Caculate the amount of days since our account was created.
+                 
+                 # Get our creation time from the stored date string.
+                 creation_time = datetime.strptime(self.account.fields.get("CREATED", now.strftime("%Y-%m-%d %H:%M:%S")), "%Y-%m-%d %H:%M:%S")
+                 
+                 # Caculate the difference in dates.
+                 delta_time = now - creation_time
+                 
+                 # Get the difference in days, That's how many days our account has been created.
+                 accountDays = abs(delta_time.days)
+                 
+            # If no errors occured and we got our account, Then we authorize this client to use the other messages.
+            if returnCode == 0 and self.account: self.__authorized = True
+
+            datagram = Datagram()
+            datagram.addInt8(returnCode) # returnCode
+            datagram.addString(responseStr) # errorString
+            datagram.addString(userName) # userName - not saved in our db so we're just putting the playToken
+            datagram.addUint8(tokenInfo["openChatEnabled"]) # canChat
+
+            usec, sec = math.modf(time.time())
+            datagram.addUint32(int(sec))
+            datagram.addUint32(int(usec * 1000000))
+
+            datagram.addUint8(tokenInfo["paid"]) # isPaid
+            datagram.addInt32(1000 * 60 * 60) # minutesRemaining
+
+            datagram.addString("") # familyStr, unused
+            datagram.addString(whiteListChat) # whiteListChatEnabled
+            datagram.addInt32(accountDays) # accountDays
+            datagram.addString(now.strftime("%Y-%m-%d %H:%M:%S")) # lastLoggedInStr
+            self.sendMessage(CLIENT_LOGIN_2_RESP, datagram)
+
+        elif msgType == CLIENT_LOGIN_TOONTOWN:
+            print("CLIENT_LOGIN_TOONTOWN")
+            playToken = di.getString()
+            serverVersion = di.getString()
+            hashVal = di.getUint32()
+            tokenType = di.getInt32()
+            wantMagicWords = di.getString()
+            
+            tokenInfo = self.parse_play_token(playToken.encode("utf-8"), tokenType)
+                        
+            # These arguments are things we need from our token read response.
+            returnCode = tokenInfo["returnCode"]
+            responseStr = tokenInfo["respString"]
+            accountDoId = 0
+            accountName = ""
+            openChatEnabled = "YES"
+            createFriendsWithChat = "YES"
+            chatCodeCreationRule = "YES"
+            paid = "VELVET_ROPE"
+            whiteListChat = "YES"
+            userName = ""
+            
+            if tokenInfo["accountName"] != None: accountName = tokenInfo["accountName"]
+            
+            if tokenInfo["accountNumber"] != None: accountDoId = tokenInfo["accountNumber"]
+          
+            openChatEnabled = "YES" if tokenInfo["openChatEnabled"] else "NO"
+            
+            createFriendsWithChatFlags = {0: "NO", 1: "CODE", 2: "YES"} # Index to result.
+            createFriendsWithChat = createFriendsWithChatFlags.get(tokenInfo["createFriendsWithChat"], "NO")
+            
+            chatCodeCreationRuleFlags = {0: "NO", 1: "PARENT", 2: "YES"} # Index to result.
+            chatCodeCreationRule = chatCodeCreationRuleFlags.get(tokenInfo["chatCodeCreationRule"], "NO")
+            
+            paid = "FULL" if tokenInfo["paid"] else "VELVET_ROPE"
+            
+            whiteListChat = "YES" if tokenInfo["whitelistChat"] else "NO"
+            
+            if tokenInfo["userName"] != None:
+                userName = tokenInfo["userName"]
+                
+                accFile = os.path.join("database", userName + ".txt")
+                if os.path.isfile(accFile):
+                    with open(accFile, "r") as f:
+                        self.account = self.databaseServer.loadDatabaseObject(int(f.read()))
+                        accountDoId = self.account.doId
+                else:
+                    # We create an Account
+                    self.account = self.databaseServer.createDatabaseObject("Account")
+                    accountDoId = self.account.doId
+                    with open(accFile, "w") as f:
+                        f.write(str(self.account.doId))
+                        
+            # Get our current time in UTC.
+            now = datetime.now()
+            #now = now.astimezone(tz=pytz.UTC)
+            
+            # By default, We say it's existed for 0 days. 
+            accountDays = 0
+                 
+            # If we found the account then we'll do required field checks.
+            if self.account:
+                 # Check if the account has the creation date.
+                 if not self.account.fields.get("CREATED", None):
+                    self.account.update("CREATED", now.strftime("%Y-%m-%d %H:%M:%S"))
+
+                 # Update our last login time.
+                 self.account.update("LAST_LOGIN", now.strftime("%Y-%m-%d %H:%M:%S"))
+                 
+                 # Caculate the amount of days since our account was created.
+                 
+                 # Get our creation time from the stored date string.
+                 creation_time = datetime.strptime(self.account.fields.get("CREATED", now.strftime("%Y-%m-%d %H:%M:%S")), "%Y-%m-%d %H:%M:%S")
+                 
+                 # Caculate the difference in dates.
+                 delta_time = now - creation_time
+                 
+                 # Get the difference in days, That's how many days our account has been created.
+                 accountDays = abs(delta_time.days)
+                 
+            # If no errors occured and we got our account, Then we authorize this client to use the other messages.
+            if returnCode == 0 and self.account: self.__authorized = True
+
+            datagram = Datagram()
+            datagram.addInt8(returnCode) # returnCode
+            datagram.addString(responseStr) # respString (in case of error)
+            datagram.addUint32(accountDoId) # DISL ID
+            datagram.addString(accountName) # accountName - not saved in our db so we're just putting the playToken
+            datagram.addUint8(tokenInfo["accountNameApproved"]) # account name approved
+            datagram.addString(openChatEnabled) # openChatEnabled
+            datagram.addString(createFriendsWithChat) # createFriendsWithChat
+            datagram.addString(chatCodeCreationRule) # chatCodeCreationRule
+
+            usec, sec = math.modf(time.time())
+            datagram.addUint32(int(sec))
+            datagram.addUint32(int(usec * 1000000))
+
+            datagram.addString(paid) # access
+            datagram.addString(whiteListChat) # whiteListChat
+            datagram.addString(now.strftime("%Y-%m-%d %H:%M:%S")) # lastLoggedInStr
+            datagram.addInt32(accountDays) # accountDays
+            datagram.addString("NO_PARENT_ACCOUNT")
+            datagram.addString(userName) # userName - not saved in our db so we're just putting a placeholder
+            self.sendMessage(CLIENT_LOGIN_TOONTOWN_RESP, datagram)
+
+        elif self.__authorized:
+            self.handle_authenticated_datagram(msgType, di)
+
+        else:
+            print("Received unexpected/unknown messagetype %d from connection: %s:%d!" % (msgType, self.addr[0], self.addr[1]))
+            self.disconnect(220) # Internal error in the clients state machine. Contact Developers for correction.
+        
+        
+    def handle_authenticated_datagram(self, msgType, di):
+        if msgType == CLIENT_CREATE_AVATAR:
             # Client wants to create an avatar
 
             # We read av info
@@ -113,7 +357,27 @@ class Client:
 
             # We can create the avatar
             avatar = self.databaseServer.createDatabaseObject("DistributedToon")
+            
+            # OwningAccount is the field used internally for figuring out which 
+            # local accounts own the Avatar.
+            avatar.update("OwningAccount", self.account.doId)
+            
+            # We currently don't have a way to get a account name from a account,
+            # So just leave it as a specialized internal dev one..
+            avatar.update("setAccountName", "internal_%s" % str(hex(self.account.doId)))
+            
+            # DISL likely stood for Disney Internal Server Login. 
+            # This server must of had it's own set of accounts which included names
+            # and ids seperate from the OTP Server. 
+            # Since we have no such server, The fields are unused for us.
+            
+            # The DISL Name is the name of the Disney XD Account (Global Account).
+            # We don't know how their names were stored or looked like.
+            avatar.update("setDISLname", "unknown")
+            # The DISL Id is the id for a Disney XD Account (Global Account).
+            # We don't know how any of these look, So we just use our local account ID for now.
             avatar.update("setDISLid", self.account.doId)
+            
             avatar.update("setDNAString", dnaString)
             avatar.update("setPosIndex", avPosition)
 
@@ -233,85 +497,6 @@ class Client:
 
             self.sendMessage(CLIENT_SET_WISHNAME_RESP, datagram)
 
-        elif msgType == CLIENT_LOGIN_2:
-            print("CLIENT_LOGIN_2")
-            playToken = di.getString()
-            serverVersion = di.getString()
-            hashVal = di.getUint32()
-            tokenType = di.getUint32()
-            validateDownload = di.getString()
-            wantMagicWords = di.getString()
-
-            accFile = os.path.join("database", str(playToken) + ".txt")
-            if os.path.isfile(accFile):
-                with open(accFile, "r") as f:
-                    self.account = self.databaseServer.loadDatabaseObject(int(f.read()))
-
-            else:
-                # We create an Account
-                self.account = self.databaseServer.createDatabaseObject("Account")
-                with open(accFile, "w") as f:
-                    f.write(str(self.account.doId))
-
-            datagram = Datagram()
-            datagram.addUint8(0) # returnCode
-            datagram.addString("") # errorString
-            datagram.addString(playToken) # userName - not saved in our db so we're just putting the playToken
-            datagram.addUint8(1) # canChat
-
-            usec, sec = math.modf(time.time())
-            datagram.addUint32(int(sec))
-            datagram.addUint32(int(usec * 1000000))
-
-            datagram.addUint8(1) # isPaid
-            datagram.addInt32(1000 * 60 * 60) # minutesRemaining
-
-            datagram.addString("") # familyStr, unused
-            datagram.addString("YES") # whiteListChatEnabled
-            datagram.addInt32(100000) # accountDays
-            datagram.addString(time.strftime("%Y-%m-%d %H:%M:%S")) # lastLoggedInStr
-            self.sendMessage(CLIENT_LOGIN_2_RESP, datagram)
-
-        elif msgType == CLIENT_LOGIN_TOONTOWN:
-            print("CLIENT_LOGIN_TOONTOWN")
-            playToken = di.getString()
-            serverVersion = di.getString()
-            hashVal = di.getUint32()
-            tokenType = di.getInt32()
-            wantMagicWords = di.getString()
-
-            accFile = os.path.join("database", str(playToken) + ".txt")
-            if os.path.isfile(accFile):
-                with open(accFile, "r") as f:
-                    self.account = self.databaseServer.loadDatabaseObject(int(f.read()))
-
-            else:
-                # We create an Account
-                self.account = self.databaseServer.createDatabaseObject("Account")
-                with open(accFile, "w") as f:
-                    f.write(str(self.account.doId))
-
-            datagram = Datagram()
-            datagram.addUint8(0) # returnCode
-            datagram.addString("") # respString (in case of error)
-            datagram.addUint32(self.account.doId) # DISL ID
-            datagram.addString(playToken) # accountName - not saved in our db so we're just putting the playToken
-            datagram.addUint8(1) # account name approved
-            datagram.addString("YES") # openChatEnabled
-            datagram.addString("YES") # createFriendsWithChat
-            datagram.addString("YES") # chatCodeCreationRule
-
-            usec, sec = math.modf(time.time())
-            datagram.addUint32(int(sec))
-            datagram.addUint32(int(usec * 1000000))
-
-            datagram.addString("FULL") # access
-            datagram.addString("YES") # whiteListChat
-            datagram.addString(time.strftime("%Y-%m-%d %H:%M:%S")) # lastLoggedInStr
-            datagram.addInt32(100000) # accountDays
-            datagram.addString("NO_PARENT_ACCOUNT")
-            datagram.addString(playToken) # userName - not saved in our db so we're just putting a placeholder
-            self.sendMessage(CLIENT_LOGIN_TOONTOWN_RESP, datagram)
 
         elif msgType == CLIENT_DELETE_AVATAR:
             # Client wants to delete one of his avatars.
@@ -531,6 +716,9 @@ class Client:
                                        "clearSmoothing", "suggestResync", "returnResync"):
 
                 print("Avatar %d updates %d (dclass %s) field %s" % (self.avatarId, do.doId, do.dclass.getName(), field.getName()))
+                
+            if doId in self.__doId2ClsendOverrides and fieldId in self.__doId2ClsendOverrides[doId]:
+                print("Avatar %d updates %d (dclass %s) with clsend overriden field %s" % (self.avatarId, do.doId, do.dclass.getName(), field.getName()))
 
 
             if doId == self.avatarId and fieldId == self.agent.setTalkFieldId:
@@ -732,6 +920,7 @@ class Client:
 
         else:
             print("Received unknown message: %d" % msgType)
+            self.disconnect(200) # Internal error in the client’s state machine. Contact Developers for correction.
 
         #else:
             #raise NotImplementedError(msgType)
@@ -759,6 +948,497 @@ class Client:
             fieldPacker.endPack()
 
         return fieldPacker.getBytes()
+        
+    def parse_play_token(self, playToken, tokenType):
+        def get_response(returnCode, respString):
+            response = {"returnCode": returnCode,
+                        "respString": respString,
+                        "accountName": None,
+                        "accountNameApproved": 0,
+                        "accountNumber": None,
+                        "userName": None,
+                        "swid": None,
+                        "familyNumber": -1,
+                        "familyAdmin": 1,
+                        "openChatEnabled": 0,
+                        "createFriendsWithChat": 0,
+                        "chatCodeCreationRule": 0,
+                        "familyMembers": None,
+                        "deployment": "",
+                        "whitelistChat": 1,
+                        "paid": 0,
+                        "hasParentAccount": 0,
+                        "toontownGameKey": None,
+                        "toonAccountType": 0,
+                       }
+
+            return response
+        
+        if tokenType == CLIENT_LOGIN_2_GREEN:
+            print("CLIENT_LOGIN_2_GREEN is not yet a supported token type!")
+            self.disconnect(106) # The field indicating what type of token we are processing is invalid.
+            return get_response(5, "Unsupported playtoken type.")
+        elif tokenType == CLIENT_LOGIN_2_BLUE:
+            print("CLIENT_LOGIN_2_BLUE is not yet a supported token type!")
+            self.disconnect(106) # The field indicating what type of token we are processing is invalid.
+            return get_response(5, "Unsupported playtoken type.")
+        # SSL Encoded Token, The main token type used for deployment and devs.
+        elif tokenType == CLIENT_LOGIN_3_DISL_TOKEN or tokenType == CLIENT_LOGIN_2_PLAY_TOKEN:
+            # Check if the token is encrypted, If not we only accept plain tokens on a dev enviorment.
+            encrypted = False
+            try:
+                base64.b64decode(playToken, validate=True)
+                encrypted = True
+            except:
+                pass
+                
+            if not encrypted and not __debug__:
+                print("Rejecting plaintext token on non-development OTP Server.")
+                self.disconnect(123) # The client agent is in a mode that disallows this type of login.
+                return get_response(3, "Ill-formated playtoken.")
+                
+            # Pre-decrypt our play token.
+            try:
+                playToken = des3_cbc_decrypt(playToken, b"kvm5SAE7sAq9csdPA8UPZRe7") if encrypted else playToken
+            except Exception as e:
+                traceback.print_exc()
+                self.disconnect(122) # Error decrypting OpenSSl token in CLIENT_LOGIN_2.
+                return get_response(3, "Ill-formated playtoken.")
+                
+            print(playToken)
+            
+            # If we don't find this paramater, It's a old style token. Which are depercated. 
+            if playToken.find(b"TOONTOWN_GAME_KEY") >= 0:
+                return self.parse_DISL_play_token(playToken)
+                
+            # The token is the old style token.
+            return self.parse_DISL_play_token_old(playToken)
+        else:
+            print("Got unknown token type '%s' for playToken!" % (str(tokenType)))
+            self.disconnect(106) # The field indicating what type of token we are processing is invalid.
+            return get_response(5, "Unsupported playtoken type.")
+
+    def parse_DISL_play_token(self, playToken):
+        response = {"returnCode": 0,
+                    "respString": "",
+                    "accountName": None,
+                    "accountNameApproved": 0,
+                    "accountNumber": None,
+                    "userName": None,
+                    "swid": None,
+                    "familyNumber": -1,
+                    "familyAdmin": 1,
+                    "openChatEnabled": 0,
+                    "createFriendsWithChat": 0,
+                    "chatCodeCreationRule": 0,
+                    "familyMembers": None,
+                    "deployment": "",
+                    "whitelistChat": 1,
+                    "paid": 0,
+                    "hasParentAccount": 0,
+                    "toontownGameKey": None,
+                    "toonAccountType": 0,
+                  }
+                   
+        # If we can't find this parameter, The token is invalid.
+        if playToken.find(b"TOONTOWN_GAME_KEY") < 0:
+            print("Failed to parse play token, Format is invalid!")
+            response["returnCode"] = 3
+            response["respString"] = "Ill-formated playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+            
+        try:
+            playToken = playToken.decode("utf-8")
+        except:
+            print("Failed to parse play token, Format is invalid!")
+            response["returnCode"] = 3
+            response["respString"] = "Ill-formated playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+            
+        # Split the token into it's variables.
+        variableLines = playToken.split("&")
+        
+        # Parse the variables.
+        variables = {}
+        for varLine in variableLines:
+            try:
+                name, value = varLine.split('=', 1)
+            except ValueError as e:
+                continue
+
+            variables[name] = value
+        
+        # Get our account name from the play token.
+        account_name = variables.get("ACCOUNT_NAME", None)
+        # If we couldn't get our account name, The token is invalid.
+        if not account_name:
+            print("Couldn't find required field 'ACCOUNT_NAME' for playToken!")
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["accountName"] = account_name
+        
+        # Get our account name apporval from the play token.
+        accountNumber = variables.get("ACCOUNT_NUMBER", None)
+        # If we got our account number, Set it in our response.
+        if accountNumber:
+            # Set the required response info.
+            response["accountNumber"] = int(accountNumber)
+            
+        # Get our account name apporval from the play token.
+        userName = variables.get("GAME_USERNAME", None)
+        # If we got our username, Set it in our response.
+        if userName:
+            # Set the required response info.
+            response["userName"] = userName
+        
+        # Get our SWID from the play token.
+        swid = variables.get("SWID", None)
+        # If we got our SWID, Set it in our response.
+        if swid:
+            # Set the required response info.
+            response["swid"] = swid
+            
+        # Check if the token is valid! (I'm not sure why a valid field exists..? Is it dynamically changed originally?)
+        valid = variables.get("valid", None)
+        # If we couldn't get if our token is valid or not, The token is of course. Invalid.
+        if not valid:
+            print("Couldn't find required field 'valid' in playToken for '%s'!" % (response["accountName"]))
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+            
+        # Get our valid bool, If we fail to with an error. It's a automatic rejection.
+        try:
+            valid = bool(valid)
+        except:
+            print("Couldn't parse required field 'valid' in playToken for '%s'!" % (response["accountName"]))
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+            
+        # If the token isn't valid... Well reject login.
+        if not valid:
+            print("PlayToken for '%s' is invalid! Rejecting login." % (response["accountName"]))
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+        
+        # Get our expirey date and check if the token is already expired.
+        expireTime = variables.get("expires", None)
+        # If we have an expirey time, Check for if our token is expired.
+        if expireTime:
+            # Calcuate our local time to check the token for when it expires.
+            # To do so, get our local time and convert it to UTC.
+            now = datetime.now()
+            now = now.astimezone(tz=pytz.UTC)
+            
+            # Sanity check our expire time.
+            try:
+                expireTime = int(expireTime)
+            except:
+                print("Token has invalid expire time '%s'! Rejecting the token for '%s'!" % (str(expireTime), response["accountName"]))
+                response["returnCode"] = 1
+                response["respString"] = "Invalid playtoken."
+                self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+                return response
+            
+            # If our time is lower then 0. The time is invalid.
+            if expireTime < 0:
+                print("Token has invalid expire time '%s'! Rejecting the token for '%s'!" % (str(expireTime), response["accountName"]))
+                response["returnCode"] = 1
+                response["respString"] = "Invalid playtoken."
+                self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+                return response
+        
+            # Convert the expirey string to a datetime.
+            expire_now = datetime.fromtimestamp(expireTime)
+            expire_now = expire_now.replace(tzinfo=pytz.UTC)
+            # Make sure the token isn't expired. If it is, Reject the token.
+            if expire_now <= now:
+                print("Token expired on '%s'! Rejecting the token for '%s'!" % (expire_now.strftime("%a, %d %b %Y %H:%M:%S GMT"), response["accountName"]))
+                response["returnCode"] = 1
+                response["respString"] = "Invalid playtoken."
+                self.disconnect(105) # The expiration time on this play token has passed.
+                return response
+
+            print("Token for '%s' accepted on %s, Token expires on %s." % (response["accountName"], now.strftime("%a, %d %b %Y %H:%M:%S GMT"), expire_now.strftime("%a, %d %b %Y %H:%M:%S GMT")))
+        elif __debug__:
+            print("Token for '%s' accepted on %s, Token doesn't ever expire." % (response["accountName"], now.strftime("%a, %d %b %Y %H:%M:%S GMT")))
+        else:
+            print("Couldn't find required field 'expires' in playToken for '%s'!" % (response["accountName"]))
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Get our account name apporval from the play token.
+        account_name_apporval = variables.get("ACCOUNT_NAME_APPROVAL", None)
+        # If we couldn't get our account name apporval, The token is invalid.
+        if not account_name_apporval:
+            print("Couldn't find required field 'ACCOUNT_NAME_APPROVAL' in playToken for '%s'!" % (response["accountName"]))
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["accountNameApproved"] = account_name_apporval == "YES"
+            
+        # Get our family number from the play token.
+        familyNumber = variables.get("FAMILY_NUMBER", None)
+        # If we couldn't get our family number, The token is invalid.
+        if not familyNumber:
+            print("Couldn't find required field 'FAMILY_NUMBER' in playToken for '%s'!" % (response["accountName"]))
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["familyNumber"] = int(familyNumber)
+        
+        # Get our family admin status from the play token.
+        familyAdmin = variables.get("familyAdmin", None)
+        # If we couldn't get our family admin status, The token is invalid.
+        if not familyAdmin:
+            print("Couldn't find required field 'familyAdmin' in playToken for '%s'!" % (response["accountName"]))
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["familyAdmin"] = int(familyAdmin)
+        
+        # Get if open chat is enabled from the play token.
+        openChatEnabled = variables.get("OPEN_CHAT_ENABLED", None)
+        # If we couldn't if open chat is enabled, The token is invalid.
+        if not openChatEnabled:
+            print("Couldn't find required field 'OPEN_CHAT_ENABLED' in playToken for '%s'!" % (response["accountName"]))
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["openChatEnabled"] = True if openChatEnabled == "YES" else False
+        
+        # Get if we can use secret codes from the play token.
+        createFriendsWithChatFlags = {"NO": 0, "CODE": 1, "YES": 2} # Result to index.
+        createFriendsWithChat = variables.get("CREATE_FRIENDS_WITH_CHAT", None)
+        # If we couldn't find that we can use secret codes or not, The token is invalid.
+        if not createFriendsWithChat:
+            print("Couldn't find required field 'CREATE_FRIENDS_WITH_CHAT' in playToken for '%s'!" % (response["accountName"]))
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["createFriendsWithChat"] = createFriendsWithChatFlags.get(createFriendsWithChat, 0)
+        
+        # Get our creation rule for secret codes from the play token.
+        chatCodeCreationRuleFlags = {"NO": 0, "PARENT": 1, "YES": 2} # Result to index.
+        chatCodeCreationRule = variables.get("CHAT_CODE_CREATION_RULE", None)
+        # If we couldn't get creation rule for secret codes, The token is invalid.
+        if not chatCodeCreationRule:
+            print("Couldn't find required field 'CHAT_CODE_CREATION_RULE' in playToken for '%s'!" % (response["accountName"]))
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["chatCodeCreationRule"] = chatCodeCreationRuleFlags.get(chatCodeCreationRule, 0)
+        
+        # Get if whitelist chat is enabled from the play token.
+        whitelistChat = variables.get("WL_CHAT_ENABLED", None)
+        # If we got our whitelist chat flag, Set it in our response.
+        if whitelistChat:
+            # Set the required response info.
+            response["whitelistChat"] = True if whitelistChat == "YES" else False
+        
+        # Toontown Specfic Variables.
+        
+        # Get our paid content access level from the play token.
+        toontown_access = variables.get("TOONTOWN_ACCESS", None)
+        # If we got our paid access level, Set it in our play token.
+        if toontown_access:
+            # Set if our account is paid or not.
+            response["paid"] = True if toontown_access == "FULL" else False
+            
+        # Get our game key from the play token.
+        toontownGameKey = variables.get("TOONTOWN_GAME_KEY", None)
+        # If we couldn't get our game key, The token is invalid.
+        if not toontownGameKey:
+            print("Couldn't find required field 'TOONTOWN_GAME_KEY' for playToken!")
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["toontownGameKey"] = toontownGameKey
+        
+        # Get our toontown account type from the play token.
+        toonAccountTypeFlags = {"NO_PARENT_ACCOUNT": 0, "WITH_PARENT_ACCOUNT": 1} # Result to index.
+        toonAccountType = variables.get("TOON_ACCOUNT_TYPE", None)
+        # If we got a toon account type, Add it to our response.
+        if not toonAccountType:
+            # Set the required response info.
+            response["toonAccountType"] = toonAccountTypeFlags.get(toonAccountType, 0)
+        
+        return response
+                   
+    def parse_DISL_play_token_old(self, playToken):
+        response = {"returnCode": 0,
+                    "respString": "",
+                    "accountName": None,
+                    "accountNameApproved": 0,
+                    "accountNumber": None,
+                    "userName": None,
+                    "swid": None,
+                    "familyNumber": -1,
+                    "familyAdmin": 1,
+                    "openChatEnabled": 0,
+                    "createFriendsWithChat": 0,
+                    "chatCodeCreationRule": 0,
+                    "familyMembers": None,
+                    "deployment": "",
+                    "whitelistChat": 1,
+                    "paid": 0,
+                    "hasParentAccount": 0,
+                    "toontownGameKey": None,
+                    "toonAccountType": 0,
+                   }
+
+        # These arguments are simply always true with this token.
+        # We have no way to know if they're true or not as of yet.
+        response["createFriendsWithChat"] = 1
+        response["chatCodeCreationRule"] = 1
+
+        # If we can't find the header, The token is invalid.
+        if playToken.find(b"PlayToken") < 0:
+            print("Failed to parse old play token, Format is invalid!")
+            response["returnCode"] = 3
+            response["respString"] = "Ill-formated playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Remove the header.
+        playToken = playToken[10:]
+
+        # Split the token into it's variables.
+        variableLines = playToken.split(b"\" ")
+
+        # Parse the variables.
+        variables = {}
+        for varLine in variableLines:
+            try:
+                name, value = varLine.split(b'=', 1)
+                value = value[1:]
+            except ValueError as e:
+                continue
+
+            variables[name] = value
+
+        # Print our variables.
+        #print(variables)
+
+        # Get our account name from the play token.
+        name = variables.get(b"name", None)
+        # If we couldn't get our account name, The token is invalid.
+        if not name:
+            print("Couldn't find required field 'name' for playToken!")
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["accountName"] = name.decode("utf-8")
+        response["accountNameApproved"] = 1
+        response["userName"] = name.decode("utf-8")
+
+        # Calcuate our local time to check the token for when it expires.
+        # To do so, get our local time and convert it to UTC.
+        now = datetime.now()
+        now = now.astimezone(tz=pytz.UTC)
+
+        # Get our expirey date and check if the token is already expired.
+        token_time = variables.get(b"expires", None)
+        # If we couldn't get our expirey string, The token is invalid.
+        if not token_time:
+            print("Couldn't find required field 'expires' in playToken for '%s'!" % (response["accountName"]))
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Convert the expirey string to a datetime.
+        token_now = datetime.strptime(token_time.decode("utf-8"), "%a, %d %b %Y %H:%M:%S GMT")
+        token_now = token_now.replace(tzinfo=pytz.UTC)
+        # Make sure the token isn't expired. If it is, Reject the token.
+        if token_now <= now:
+            print("Token expired on '%s'! Rejecting the token for '%s'!" % (token_now.strftime("%a, %d %b %Y %H:%M:%S GMT"), response["accountName"]))
+            response["returnCode"] = 1
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(105) # The expiration time on this play token has passed.
+            return response
+
+        print("Token accepted on %s, Token expires on %s." % (now.strftime("%a, %d %b %Y %H:%M:%S GMT"), token_now.strftime("%a, %d %b %Y %H:%M:%S GMT")))
+
+        paid_str = variables.get(b"paid", None)
+        # If we couldn't get our paid string, The token is invalid.
+        if not paid_str:
+            print("Couldn't find required field 'paid' in playToken for '%s'!" % (response["accountName"]))
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set if our account is paid or not.
+        response["paid"] = bool(paid_str)
+
+        chat_str = variables.get(b"chat", None)
+        # If we couldn't get our chat string, The token is invalid.
+        if not chat_str:
+            print("Couldn't find required field 'chat' in playToken for '%s'!" % (response["accountName"]))
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set if our account has open chat or not.
+        response["chat"] = bool(chat_str)
+
+        # TODO: Fix this.
+        '''
+        # Get our deployment from the play token.
+        deployment = variables.get(b"Deployment", None)
+        # If we couldn't get our deployment, The token is invalid.
+        if not deployment:
+            print("Couldn't find required field 'Deployment' for playToken for '%s'!" % (response["accountName"]))
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["deployment"] = deployment.decode("utf-8")
+        '''
+
+        return response
+        
 
     def writeAvatarList(self, dg):
         """
@@ -886,6 +1566,10 @@ class Client:
 
         # We load the avatar from the database
         avatar = self.databaseServer.loadDatabaseObject(avId)
+        
+        # This for legavy sipport.
+        if not "OwningAccount" in avatar.fields:
+            avatar.update("OwningAccount", self.account.doId)
 
         # We ask STATESERVER to create our object
         dg = Datagram()
@@ -947,7 +1631,7 @@ class Client:
                 friendIds.append(friendsList[i][0])
 
             for client in self.agent.clients:
-                # If the id matches, It means this friend is online!
+                # If the id matches, It means this friend is now offline!
                 if client.avatarId in friendIds:
                     dg = Datagram()
                     dg.addUint32(self.avatarId)

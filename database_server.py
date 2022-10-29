@@ -1,9 +1,11 @@
+import hashlib, os, uuid
+
 from panda3d.core import Datagram, DatagramIterator
 from panda3d.direct import DCPacker
+
 from database_object import DatabaseObject
 from distributed_object import DistributedObject
 from msgtypes import *
-import os
 
 class DatabaseServer:
     def __init__(self, otp):
@@ -108,8 +110,15 @@ class DatabaseServer:
         else:
             doId = max([int(filename[:-4]) for filename in files if filename.endswith(".bin")]) + 1
             
+        # Generate a unique indentifier for the database object.
+        m = hashlib.md5()
+        m.update(("%s-%d" % (str(dclassName), doId)).encode('utf-8'))
+
+        doUuId = uuid.UUID(m.hexdigest(), version=4)
+        #doUuId = uuid.UUID(int=doId, version=4)
+            
         # We generate the DatabaseObject
-        do = DatabaseObject(self, doId, dclass)
+        do = DatabaseObject(self, doId, doUuId, dclass)
         
         # We set default values
         packer = DCPacker()
