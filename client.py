@@ -38,18 +38,6 @@ class Client:
 
         # This is used to store the clsend field overrides sent by CLIENT_SET_FIELD_SENDABLE.
         self.__doId2ClsendOverrides = {}
-<<<<<<< HEAD
-
-
-    def disconnect(self, index=None):
-        datagram = Datagram()
-        if index:
-            datagram.addUint16(index)
-            datagram.addString("") # TODO: get string from index
-
-        self.sendMessage(CLIENT_GO_GET_LOST, datagram)
-
-=======
         
         
     def disconnect(self, index=None, reason=""):
@@ -64,7 +52,6 @@ class Client:
         # We are no longer authorized.
         self.__authorized = False
         
->>>>>>> 22caedd (Initial proper PlayToken support.)
         # Now we disconnect the client
         self.sock.close()
 
@@ -78,13 +65,8 @@ class Client:
     def onAvatarDelete(self):
         # Our avatar got deleted
         self.avatarId = 0
-<<<<<<< HEAD
-        self.disconnect(153)
-
-=======
         self.disconnect(153, "Lost connection.")
-        
->>>>>>> 22caedd (Initial proper PlayToken support.)
+
     def onLost(self):
         # We remove the avatar if we're disconnecting. Bye!
         if self.avatarId:
