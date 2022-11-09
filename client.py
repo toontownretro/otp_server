@@ -138,21 +138,6 @@ class Client:
             chatCodeCreationRule = "YES" if tokenInfo["chatCodeCreationRule"] else "NO"
 
             whiteListChat = "YES" if tokenInfo["whitelistChat"] else "NO"
-            
-            if tokenInfo["userName"] != None:
-                userName = tokenInfo["userName"]
-                
-                accFile = os.path.join("database", userName + ".txt")
-                if os.path.isfile(accFile):
-                    with open(accFile, "r") as f:
-                        self.account = self.databaseServer.loadDatabaseObject(int(f.read()))
-                        accountDoId = self.account.doId
-                else:
-                    # We create an Account
-                    self.account = self.databaseServer.createDatabaseObject("Account")
-                    accountDoId = self.account.doId
-                    with open(accFile, "w") as f:
-                        f.write(str(self.account.doId))
                         
             # Get our current time in UTC.
             now = datetime.now()
@@ -161,25 +146,43 @@ class Client:
             # By default, We say it's existed for 0 days. 
             accountDays = 0
                  
-            # If we found the account then we'll do required field checks.
-            if self.account:
-                 # Check if the account has the creation date.
-                 if not self.account.fields.get("CREATED", None):
-                    self.account.update("CREATED", now.strftime("%Y-%m-%d %H:%M:%S"))
+            if tokenInfo["userName"] != None:
+                userName = tokenInfo["userName"]
 
-                 # Update our last login time.
-                 self.account.update("LAST_LOGIN", now.strftime("%Y-%m-%d %H:%M:%S"))
+                accountDoIdStr = self.databaseServer.manager.backend.getFromAccountServer(userName) if self.databaseServer.manager.backend.inAccountServer(userName) else None
+                if accountDoIdStr:
+                    self.account = self.databaseServer.manager.loadDatabaseObject(int(accountDoIdStr))
+                    accountDoId = self.account.doId
+
+                    # Check if the account has the creation date.
+                    if not self.account.fields.get("CREATED", None):
+                        self.account.update("CREATED", now.strftime("%Y-%m-%d %H:%M:%S"))
+                        
+                    # Update our last login time.
+                    self.account.update("LAST_LOGIN", now.strftime("%Y-%m-%d %H:%M:%S"))
+                else:
+                    # Fill out our account fields that have no default value.
+                    fields = {"ESTATE_ID": 0,
+                              "PLAYED_MINUTES": "",
+                              "PLAYED_MINUTES_PERIOD": "",
+                              "CREATED": now.strftime("%Y-%m-%d %H:%M:%S"),
+                              "LAST_LOGIN": now.strftime("%Y-%m-%d %H:%M:%S")}
+
+                    # We create an Account
+                    self.account = self.databaseServer.manager.createDatabaseObjectFromName("Account", fields=fields)
+                    accountDoId = self.account.doId
+                    self.databaseServer.manager.backend.addToAccountServer(userName, self.account.doId)
+                    
+                # Caculate the amount of days since our account was created.
                  
-                 # Caculate the amount of days since our account was created.
+                # Get our creation time from the stored date string.
+                creation_time = datetime.strptime(self.account.fields.get("CREATED", now.strftime("%Y-%m-%d %H:%M:%S")), "%Y-%m-%d %H:%M:%S")
                  
-                 # Get our creation time from the stored date string.
-                 creation_time = datetime.strptime(self.account.fields.get("CREATED", now.strftime("%Y-%m-%d %H:%M:%S")), "%Y-%m-%d %H:%M:%S")
+                # Caculate the difference in dates.
+                delta_time = now - creation_time
                  
-                 # Caculate the difference in dates.
-                 delta_time = now - creation_time
-                 
-                 # Get the difference in days, That's how many days our account has been created.
-                 accountDays = abs(delta_time.days)
+                # Get the difference in days, That's how many days our account has been created.
+                accountDays = abs(delta_time.days)
                  
             # If no errors occured and we got our account, Then we authorize this client to use the other messages.
             if returnCode == 0 and self.account: self.__authorized = True
@@ -240,21 +243,6 @@ class Client:
             paid = "FULL" if tokenInfo["paid"] else "VELVET_ROPE"
             
             whiteListChat = "YES" if tokenInfo["whitelistChat"] else "NO"
-            
-            if tokenInfo["userName"] != None:
-                userName = tokenInfo["userName"]
-                
-                accFile = os.path.join("database", userName + ".txt")
-                if os.path.isfile(accFile):
-                    with open(accFile, "r") as f:
-                        self.account = self.databaseServer.loadDatabaseObject(int(f.read()))
-                        accountDoId = self.account.doId
-                else:
-                    # We create an Account
-                    self.account = self.databaseServer.createDatabaseObject("Account")
-                    accountDoId = self.account.doId
-                    with open(accFile, "w") as f:
-                        f.write(str(self.account.doId))
                         
             # Get our current time in UTC.
             now = datetime.now()
@@ -262,26 +250,47 @@ class Client:
             
             # By default, We say it's existed for 0 days. 
             accountDays = 0
-                 
-            # If we found the account then we'll do required field checks.
-            if self.account:
-                 # Check if the account has the creation date.
-                 if not self.account.fields.get("CREATED", None):
-                    self.account.update("CREATED", now.strftime("%Y-%m-%d %H:%M:%S"))
+            
+            if tokenInfo["userName"] != None:
+                userName = tokenInfo["userName"]
 
-                 # Update our last login time.
-                 self.account.update("LAST_LOGIN", now.strftime("%Y-%m-%d %H:%M:%S"))
-                 
-                 # Caculate the amount of days since our account was created.
-                 
-                 # Get our creation time from the stored date string.
-                 creation_time = datetime.strptime(self.account.fields.get("CREATED", now.strftime("%Y-%m-%d %H:%M:%S")), "%Y-%m-%d %H:%M:%S")
-                 
-                 # Caculate the difference in dates.
-                 delta_time = now - creation_time
-                 
-                 # Get the difference in days, That's how many days our account has been created.
-                 accountDays = abs(delta_time.days)
+                accountDoIdStr = self.databaseServer.manager.backend.getFromAccountServer(userName) if self.databaseServer.manager.backend.inAccountServer(userName) else None
+                if accountDoIdStr:
+                    self.account = self.databaseServer.manager.loadDatabaseObject(int(accountDoIdStr))
+                    accountDoId = self.account.doId
+
+                    # Check if the account has the creation date.
+                    if not self.account.fields.get("CREATED", None):
+                        self.account.update("CREATED", now.strftime("%Y-%m-%d %H:%M:%S"))
+                        
+                    # Update our last login time.
+                    self.account.update("LAST_LOGIN", now.strftime("%Y-%m-%d %H:%M:%S"))
+                else:
+                    # Fill out our account fields.
+                    fields = {"ACCOUNT_AV_SET": [0, 0, 0, 0, 0, 0,],
+                              "pirateAvatars": [0, 0, 0, 0, 0, 0,],
+                              "HOUSE_ID_SET": [0, 0, 0, 0, 0, 0,],
+                              "ESTATE_ID": 0,
+                              "PLAYED_MINUTES": "",
+                              "PLAYED_MINUTES_PERIOD": "",
+                              "CREATED": now.strftime("%Y-%m-%d %H:%M:%S"),
+                              "LAST_LOGIN": now.strftime("%Y-%m-%d %H:%M:%S")}
+
+                    # We create an Account
+                    self.account = self.databaseServer.manager.createDatabaseObjectFromName("Account", fields=fields)
+                    accountDoId = self.account.doId
+                    self.databaseServer.manager.backend.addToAccountServer(userName, self.account.doId)
+
+                # Caculate the amount of days since our account was created.
+
+                # Get our creation time from the stored date string.
+                creation_time = datetime.strptime(self.account.fields.get("CREATED", now.strftime("%Y-%m-%d %H:%M:%S")), "%Y-%m-%d %H:%M:%S")
+
+                # Caculate the difference in dates.
+                delta_time = now - creation_time
+
+                # Get the difference in days, That's how many days our account has been created.
+                accountDays = abs(delta_time.days)
                  
             # If no errors occured and we got our account, Then we authorize this client to use the other messages.
             if returnCode == 0 and self.account: self.__authorized = True
@@ -333,20 +342,19 @@ class Client:
             # Doesn't it already have an avatar at this slot?
             accountAvSet = self.account.fields["ACCOUNT_AV_SET"]
 
-            if accountAvSet[avPosition]:
+            if accountAvSet[avPosition] and self.databaseServer.manager.hasDatabaseObject(accountAvSet[avPosition]):
                 print("Client tried to overwrite an avatar")
                 return
+                
+            fields = {}
 
-            # We can create the avatar
-            avatar = self.databaseServer.createDatabaseObject("DistributedToon")
-            
             # OwningAccount is the field used internally for figuring out which 
             # local accounts own the Avatar.
-            avatar.update("OwningAccount", self.account.doId)
+            fields["OwningAccount"] = self.account.doId
             
             # We currently don't have a way to get a account name from a account,
             # So just leave it as a specialized internal dev one..
-            avatar.update("setAccountName", "internal_%s" % str(hex(self.account.doId)))
+            fields["setAccountName"] = "internal_%s" % str(hex(self.account.doId))
             
             # DISL likely stood for Disney Internal Server Login. 
             # This server must of had it's own set of accounts which included names
@@ -355,13 +363,16 @@ class Client:
             
             # The DISL Name is the name of the Disney XD Account (Global Account).
             # We don't know how their names were stored or looked like.
-            avatar.update("setDISLname", "unknown")
+            fields["setDISLname"] = "unknown"
             # The DISL Id is the id for a Disney XD Account (Global Account).
             # We don't know how any of these look, So we just use our local account ID for now.
-            avatar.update("setDISLid", self.account.doId)
+            fields["setDISLid"] = self.account.doId
             
-            avatar.update("setDNAString", dnaString)
-            avatar.update("setPosIndex", avPosition)
+            fields["setDNAString"] = dnaString
+            fields["setPosIndex"] = avPosition
+            
+            # We can create the avatar
+            avatar = self.databaseServer.manager.createDatabaseObjectFromName("DistributedToon", fields)
 
             # We save the avatar in the account
             accountAvSet[avPosition] = avatar.doId
@@ -418,11 +429,11 @@ class Client:
                     name += namePart
 
             # Make sure the requested object exists.
-            if not self.databaseServer.hasDatabaseObject(avId):
+            if not self.databaseServer.manager.hasDatabaseObject(avId):
                 return
 
             # We set the toon's name
-            avatar = self.databaseServer.loadDatabaseObject(avId)
+            avatar = self.databaseServer.manager.loadDatabaseObject(avId)
             avatar.update("setName", name.strip())
 
             # We tell the client that their new name is accepted
@@ -462,12 +473,12 @@ class Client:
                 return
 
             # Make sure the requested object exists.
-            if not self.databaseServer.hasDatabaseObject(avId):
+            if not self.databaseServer.manager.hasDatabaseObject(avId):
                 return
 
             # Client wants to set the name and we're just gonna
             # allow him to.
-            avatar = self.databaseServer.loadDatabaseObject(avId)
+            avatar = self.databaseServer.manager.loadDatabaseObject(avId)
             avatar.update("setName", name)
 
             datagram = Datagram()
@@ -737,8 +748,8 @@ class Client:
             doId = di.getUint32()
 
             # Check if the target's database object exists.
-            if self.databaseServer.hasDatabaseObject(doId):
-                target = self.databaseServer.loadDatabaseObject(doId)
+            if self.databaseServer.manager.hasDatabaseObject(doId):
+                target = self.databaseServer.manager.loadDatabaseObject(doId)
 
                 # Make sure the friends list field exists.
                 if "setFriendsList" in target.fields:
@@ -755,8 +766,8 @@ class Client:
                 self.databaseServer.saveDatabaseObject(target)
 
             # Check if our database object exists.
-            if self.databaseServer.hasDatabaseObject(self.avatarId):
-                avatar = self.databaseServer.loadDatabaseObject(self.avatarId)
+            if self.databaseServer.manager.hasDatabaseObject(self.avatarId):
+                avatar = self.databaseServer.manager.loadDatabaseObject(self.avatarId)
 
                 # Make sure the friends list field exists.
                 if "setFriendsList" in avatar.fields:
@@ -785,10 +796,10 @@ class Client:
                 return
 
             # If our OWN database object doesn't exist... Perhaps we have bigger issues..
-            if not self.databaseServer.hasDatabaseObject(self.avatarId):
+            if not self.databaseServer.manager.hasDatabaseObject(self.avatarId):
                 return
 
-            fields = self.databaseServer.loadDatabaseObject(self.avatarId).fields
+            fields = self.databaseServer.manager.loadDatabaseObject(self.avatarId).fields
 
             if not "setFriendsList" in fields:
                 dg = Datagram()
@@ -805,12 +816,12 @@ class Client:
 
                 # Make sure our friend actually has a database object!
                 # If it doesn't, Skip over it and emit a warning.
-                if not self.databaseServer.hasDatabaseObject(friendId):
+                if not self.databaseServer.manager.hasDatabaseObject(friendId):
                     print("Friend %d for Avatar %d doesn't have a database object!" % (friendId, self.avatarId))
                     continue
 
                 # Load our fields from the friend in question.
-                friendsFields = self.databaseServer.loadDatabaseObject(friendId).fields
+                friendsFields = self.databaseServer.manager.loadDatabaseObject(friendId).fields
 
                 # We're missing a required field, And this version of getting the list doesn't sanity check these
                 # individually.
@@ -876,11 +887,11 @@ class Client:
             dclass = self.databaseServer.dc.getClassByName(dclassName)
 
             # Make sure the requested object exists.
-            if not self.databaseServer.hasDatabaseObject(doId):
+            if not self.databaseServer.manager.hasDatabaseObject(doId):
                 return
 
             # Grab the fields from the object via the database.
-            fields = self.databaseServer.loadDatabaseObject(doId).fields
+            fields = self.databaseServer.manager.loadDatabaseObject(doId).fields
 
             # Pack our data to go to the client.
             packedData = self.packDetails(dclass, fields)
@@ -1427,25 +1438,48 @@ class Client:
         Add client avatar list to a datagram
         """
         accountAvSet = self.account.fields["ACCOUNT_AV_SET"]
-
-        # Avatar count
-        dg.addUint16(sum(n != 0 for n in accountAvSet)) # avatarTotal
+        
+        # This is each blob of data for the avatars we have managed to load.
+        avatarBlobs = []
 
         # We send every avatar
-        for pos, avId in enumerate(self.account.fields["ACCOUNT_AV_SET"]):
+        for pos, avId in enumerate(accountAvSet):
+            ndg = Datagram()
+            ndgi = DatagramIterator(ndg)
+
             if avId == 0:
                 continue
 
-            avatar = self.databaseServer.loadDatabaseObject(avId)
+            if not self.databaseServer.manager.hasDatabaseObject(avId):
+                print("ERROR: Failed to load avatar %d for account %d, Avatar doesn't exist!" % (avId, self.account.doId))
+                accountAvSet[pos] = 0
+                continue
 
-            dg.addUint32(avatar.doId) # avNum
-            dg.addString(avatar.fields["setName"][0])
-            dg.addString("")
-            dg.addString("")
-            dg.addString("")
-            dg.addBlob(avatar.fields["setDNAString"][0])
-            dg.addUint8(pos)
-            dg.addUint8(0)
+            avatar = self.databaseServer.manager.loadDatabaseObject(avId)
+            if not avatar:
+                print("ERROR: Failed to load avatar %d for account %d, An unknown error has occured!" % (avId, self.account.doId))
+                continue
+
+            ndg.addUint32(avatar.doId) # avNum
+            ndg.addString(avatar.fields["setName"][0])
+            ndg.addString("")
+            ndg.addString("")
+            ndg.addString("")
+            ndg.addBlob(avatar.fields["setDNAString"][0])
+            ndg.addUint8(pos)
+            ndg.addUint8(0)
+
+            avatarBlobs.append(ndgi.getRemainingBytes())
+
+        # Avatar count
+        dg.addUint16(len(avatarBlobs)) # avatarTotal
+
+        # Append each avatar blob to the datagram.
+        for i in range(0, len(avatarBlobs)):
+            dg.appendData(avatarBlobs[i])
+            
+        # Since we sanity checked our avatars to load, Make any invalid spots are overwritten and saved.
+        self.account.update("ACCOUNT_AV_SET", accountAvSet)
 
     def sendMessage(self, code, datagram):
         """
@@ -1547,9 +1581,9 @@ class Client:
             return
 
         # We load the avatar from the database
-        avatar = self.databaseServer.loadDatabaseObject(avId)
+        avatar = self.databaseServer.manager.loadDatabaseObject(avId)
         
-        # This for legavy sipport.
+        # This for legacy sipport.
         if not "OwningAccount" in avatar.fields:
             avatar.update("OwningAccount", self.account.doId)
 
@@ -1601,7 +1635,7 @@ class Client:
             return
 
         # We load the avatar from the database
-        avatar = self.databaseServer.loadDatabaseObject(self.avatarId)
+        avatar = self.databaseServer.manager.loadDatabaseObject(self.avatarId)
 
         # If we have friends... We should probably let them know we're heading off.
         if "setFriendsList" in avatar.fields:

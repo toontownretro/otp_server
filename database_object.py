@@ -15,12 +15,13 @@ class DatabaseObject:
     version = (majVer, minVer, subVer)
     minVersion = (supMajVer, supMinVer, supSubVer)
     
-    def __init__(self, dbss, doId, uuId, dclass):
-        self.dbss = dbss
+    def __init__(self, dbm, doId, uuId, dclass):
+        self.dbm = dbm
         self.doId = doId
         self.uuId = uuId
         self.dclass = dclass
         self.fields = {}
+        self.dcObjectType = 0
         
     def packRequired(self, dg):
         packer = DCPacker()
@@ -47,7 +48,11 @@ class DatabaseObject:
             if field.isDb() and not field.isRequired() and field.getName() in self.fields:
                 packer.rawPackUint16(field.getNumber())
                 packer.beginPack(field)
-                field.packArgs(packer, self.fields[field.getName()])
+                fieldValue = self.fields[field.getName()]
+                if not fieldValue:
+                    print("Failed to pack other field '%s' in dcclass '%s' for doId %d!" % (field.getName(), self.dclass.getName(), self.doId))
+                    continue
+                field.packArgs(packer, fieldValue)
                 packer.packDefaultValue()
                 packer.endPack()
                 count += 1
@@ -85,112 +90,32 @@ class DatabaseObject:
 
         return value
         
+    def setField(self, fieldName, value):
+        field = self.dclass.getFieldByName(fieldName)
+        if not field:
+            return
+        
+        if not field.isDb():
+            print("Setting server only field %r." % field.getName())
+            
+        self.fields[field.getName()] = value
+        
     def getField(self, fieldName):
         return self.fields.get(fieldName, None)
         
+    def setFields(self, fieldsData):
+        for fieldName, value in fieldsData.items():
+            field = self.dclass.getFieldByName(fieldName)
+            if not field:
+                continue
+            
+            if not field.isDb():
+                print("Setting server only field %r." % field.getName())
+                
+            self.fields[field.getName()] = value
+        
     def getFields(self):
         return self.fields
-        
-    @classmethod
-    def fromBinary(cls, dbss, data):
-        if data[:16] == b"# DatabaseObject":
-            dclassName, version, doId, uuId, fieldsData = eval(data)
-            
-            minVersion = cls.minVersion
-            lastVersion = cls.version
-            
-            # Check for our minimum supported version.
-            if version < minVersion or version > lastVersion:
-                raise Exception("Tried to read database object with version %d.%d.%d, But only %d.%d.%d through %d.%d.%d is supported!" % (version[0], version[1], version[2], minVersion[0], minVersion[1], minVersion[2], lastVersion[0], lastVersion[1], lastVersion[2]))
-
-            # Convert the string back into a UUID instance.
-            uuId = uuid.UUID(uuId)
-            
-            dclass = dbss.dc.getClassByName(dclassName)
-            
-            self = cls(dbss, doId, uuId, dclass)
-            for fieldName, value in fieldsData.items():
-                field = dclass.getFieldByName(fieldName)
-                
-                if not field.isDb():
-                    print("Reading server only field %r." % field.getName())
-                    
-                self.fields[field.getName()] = value
-                    
-            return self
-        else:
-            packer = DCPacker()
-            packer.setUnpackData(data)
-            
-            # Get our version from our packed object.
-            majVer = packer.rawUnpackUint8()
-            minVer = packer.rawUnpackUint8()
-            subVer = packer.rawUnpackUint8()
-            version = (majVer, minVer, subVer)
-            
-            minVersion = cls.minVersion
-            lastVersion = cls.version
-            
-            # Check for our minimum supported version.
-            if version < minVersion or version > lastVersion:
-                raise Exception("Tried to read database object with version %d.%d.%d, But only %d.%d.%d through %d.%d.%d is supported!" % (version[0], version[1], version[2], minVersion[0], minVersion[1], minVersion[2], lastVersion[0], lastVersion[1], lastVersion[2]))
-                
-            dclass = dbss.dc.getClassByName(packer.rawUnpackString())
-            doId = packer.rawUnpackUint32()
-            
-            # Convert the string back into a UUID instance.
-            uuId = uuid.UUID(packer.rawUnpackString())
-            
-            self = cls(dbss, doId, uuId, dclass)
-            
-            # We get every field
-            while packer.getUnpackLength() > packer.getNumUnpackedBytes():
-                field = dclass.getFieldByName(packer.rawUnpackString())
-                
-                packer.beginUnpack(field)
-                value = field.unpackArgs(packer)
-                packer.endUnpack()
-                
-                if not field.isDb():
-                    print("Reading server only field %r." % field.getName())
-                    
-                self.fields[field.getName()] = value
-                    
-            return self
-        
-        
-    def toBinary(self):
-        if True:
-            # Special readable format. We probably should benchmark this,
-            # it's perhaps faster
-            
-            return b"# DatabaseObject\n" + pformat((self.dclass.getName(), self.version, self.doId, str(self.uuId), self.fields), width=-1, sort_dicts=True).encode("utf8")
-        else:
-            data = bytearray()
-            packer = DCPacker()
-            
-            # Pack our version.
-            packer.rawPackUint8(self.majVer)
-            packer.rawPackUint8(self.minVer)
-            packer.rawPackUint8(self.subVer)
-            
-            # Pack our DC object.
-            packer.rawPackString(self.dclass.getName())
-            packer.rawPackUint32(self.doId)
-            packer.rawPackString(str(self.uuId))
-            
-            # We get every field
-            for fieldName, value in self.fields.items():
-                field = self.dclass.getFieldByName(fieldName)
-                
-                if field.isDb():
-                    packer.rawPackString(field.getName())
-                    packer.beginPack(field)
-                    field.packArgs(packer, self.fields[field.getName()])
-                    packer.endPack()
-                    
-            return packer.getBytes()
-        
         
     def receiveField(self, field, di):
         packer = DCPacker()
@@ -221,7 +146,7 @@ class DatabaseObject:
         di.skipBytes(packer.getNumUnpackedBytes())
         
         # This isn't very optimized, but we wanna make sure we don't lose anything
-        self.dbss.saveDatabaseObject(self)
+        self.dbm.saveDatabaseObject(self)
         
         
     def update(self, field, *values):
@@ -240,4 +165,25 @@ class DatabaseObject:
                 
             self.fields[field.getName()] = values[0]
             
-        self.dbss.saveDatabaseObject(self)
+        self.dbm.saveDatabaseObject(self)
+        
+    def unsafe_update(self, field, *values):
+        """
+        This does the same as update(), But doesn't we don't save them to database
+        on appliance. 
+        """
+        
+        # "Manual" update
+        field = self.dclass.getFieldByName(field)
+        
+        if field.asAtomicField():
+            self.fields[field.getName()] = values
+            
+        elif field.asMolecularField():
+            raise Exception("No.")
+            
+        elif field.asParameter():
+            if len(values) != 1:
+                raise Exception("Arg count mismatch")
+                
+            self.fields[field.getName()] = values[0]

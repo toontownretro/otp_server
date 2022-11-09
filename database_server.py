@@ -1,8 +1,9 @@
 import hashlib, os, uuid
 
-from panda3d.core import Datagram, DatagramIterator
+from panda3d.core import ConfigVariableString, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
 from panda3d.direct import DCPacker
 
+from database_manager import DatabaseManager
 from database_object import DatabaseObject
 from distributed_object import DistributedObject
 from msgtypes import *
@@ -20,27 +21,61 @@ class DatabaseServer:
         self.messageDirector = self.otp.messageDirector
         self.stateServer = self.otp.stateServer
         
-        # Cached DBObjects
-        self.cache = {}
+        # Dictonaries containing info relating to all of our DC Objects with the DcObjectType field.
+        self.dcObjectTypes = {}
+        self.dcObjectTypeFromName = {}
+        self.caculateDCObjects()
         
-        # List of DC Classes that have the DcObjectType field.
-        self.dbObjectClassNames = []
+        # Get our Panda3D Virtual File System, And keep a reference.
+        self.vfs = VirtualFileSystem.getGlobalPtr()
         
-        # Database path
-        self.path = "database"
+        # Create our Database Manager. 
+        self.manager = DatabaseManager(self)
         
-        if not os.path.exists(self.path):
-            os.mkdir(self.path)
+    def caculateDCObjects(self):
+        dcObjectCount = 0
         
-        # Get all of our dc classes with the DcObjectType field.
+        # Fist let's check all classes at their base and store them.
+        # We don't want classes which inherited to have a different number then
+        # it's base class. So we parse child classes to their parents after.
         for i in range(0, self.dc.getNumClasses()):
-            dclass = self.dc.getClass(i)
-            # While DistributedToon is a valid db class.
-            # It doesn't need an id.
-            if dclass.getName() == "DistributedToon":
+            dcClass = self.dc.getClass(i)
+            for j in range(0, dcClass.getNumFields()):
+                field = dcClass.getField(j)
+                if field.getName() == "DcObjectType":
+                    dcObjectCount += 1
+                    self.dcObjectTypes[dcObjectCount] = dcClass
+                    self.dcObjectTypeFromName[dcClass.getName()] = dcObjectCount
+                    
+        
+        def isInheritedDcObjectClass(dcClass):
+            """
+            This function is will iterate the parents of a dc class
+            and return if the dc class inherits a dc class in our dc object types.
+            """
+            isDcObject = False
+            for j in range(0, dcClass.getNumParents()):
+                dcClassParent = dcClass.getParent(j)
+                isDcObject = dcClassParent.getName() in self.dcObjectTypeFromName
+                if not isDcObject and dcClassParent.getNumParents() > 0: # Check the parent' parents for if we are one too.
+                    isDcObject = isInheritedDcObjectClass(dcClassParent)
+                
+                if not isDcObject: # Don't even bother if we aren't one.
+                    continue
+                    
+            return isDcObject
+                   
+        # Now we just iterate the dc classes for if one inherits from one 
+        # of our confirmed dc classes to have a dc object type.
+        for i in range(0, self.dc.getNumClasses()):
+            dcClass = self.dc.getClass(i)
+            isDcObject = isInheritedDcObjectClass(dcClass)
+            if not isDcObject:
                 continue
-            if dclass.getFieldByName("DcObjectType"):
-                self.dbObjectClassNames.append(dclass.getName())
+            
+            dcObjectCount += 1
+            self.dcObjectTypes[dcObjectCount] = dcClass
+            self.dcObjectTypeFromName[dcClass.getName()] = dcObjectCount
             
     def handle(self, channels, sender, code, datagram):
         """
@@ -75,9 +110,9 @@ class DatabaseServer:
                 else:
                     raise Exception("Unknown message on DBServer channel: %d" % code)
                     
-            if channel in self.cache:
+            if channel in self.manager.cache:
                 di = DatagramIterator(datagram)
-                do = self.cache[channel]
+                do = self.manager.cache[channel]
                 
                 if code == STATESERVER_OBJECT_UPDATE_FIELD:
                     # We are asked to update a field
@@ -91,72 +126,6 @@ class DatabaseServer:
                     # We apply the update
                     field = do.dclass.getFieldByIndex(fieldId)
                     do.receiveField(field, di)
-
-    def createDatabaseObject(self, dclassName):
-        """
-        Create a database object with the dclass and default fields
-        """
-        
-        # We look for the dclass
-        dclass = self.dc.getClassByName(dclassName)
-        if not dclass:
-            raise NameError(dclassName)
-        
-        # We get a doId
-        files = os.listdir(self.path)
-        
-        if sum(filename.endswith(".bin") for filename in files) == 0:
-            doId = 10000000
-        else:
-            doId = max([int(filename[:-4]) for filename in files if filename.endswith(".bin")]) + 1
-            
-        # Generate a unique indentifier for the database object.
-        m = hashlib.md5()
-        m.update(("%s-%d" % (str(dclassName), doId)).encode('utf-8'))
-
-        doUuId = uuid.UUID(m.hexdigest(), version=4)
-        #doUuId = uuid.UUID(int=doId, version=4)
-            
-        # We generate the DatabaseObject
-        do = DatabaseObject(self, doId, doUuId, dclass)
-        
-        # We set default values
-        packer = DCPacker()
-        for n in range(dclass.getNumInheritedFields()):
-            field = dclass.getInheritedField(n)
-            if field.isDb():
-                packer.setUnpackData(field.getDefaultValue())
-                packer.beginUnpack(field)
-                do.fields[field.getName()] = field.unpackArgs(packer)
-                packer.endUnpack()
-                
-        # We save the object
-        self.saveDatabaseObject(do)
-        return do
-        
-    def hasDatabaseObject(self, doId):
-        """
-        Check if a database object exists.
-        """
-        return os.path.isfile(os.path.join(self.path, str(doId) + ".bin"))
-        
-    def saveDatabaseObject(self, do):
-        """
-        Save a database object
-        """
-        with open(os.path.join(self.path, str(do.doId) + ".bin"), "wb") as file:
-            file.write(do.toBinary())
-        
-        
-    def loadDatabaseObject(self, doId):
-        """
-        Load a database object by its id
-        """
-        if not doId in self.cache:
-            with open(os.path.join(self.path, str(doId) + ".bin"), "rb") as file:
-                self.cache[doId] = DatabaseObject.fromBinary(self, file.read())
-        
-        return self.cache[doId]
         
     def getStoredValues(self, sender, datagram):
         """
@@ -190,7 +159,7 @@ class DatabaseServer:
             dg.addString(fieldNames[i])
         
         # Make sure our database object even exists first.
-        if not self.hasDatabaseObject(doId):
+        if not self.manager.hasDatabaseObject(doId):
             # Failed to get our object. So we just add our response code.
             dg.addUint8(1)
             # Send out our response.
@@ -200,7 +169,7 @@ class DatabaseServer:
         dg.addUint8(0)
         
         # Load our database object.
-        do = self.loadDatabaseObject(doId)
+        do = self.manager.loadDatabaseObject(doId)
         
         values = []
         found = []
@@ -231,7 +200,7 @@ class DatabaseServer:
         self.messageDirector.sendMessage([sender], 20100000, DBSERVER_GET_STORED_VALUES_RESP, dg)
         
         # Generate our db object if needed!
-        if do.dclass.getName() in self.dbObjectClassNames:
+        if do.dclass.getName() in list(self.dcObjectTypeFromName.keys()):
             if do.doId in self.stateServer.objects:
                 #print("%s object %d already exists in objects!" % (do.dclass.getName(), do.doId))
                 return
@@ -265,11 +234,11 @@ class DatabaseServer:
             fieldValues.append(di.getString())
             
         # Make sure our database object even exists first.
-        if not self.hasDatabaseObject(doId):
+        if not self.manager.hasDatabaseObject(doId):
             return
 
         # Load our database object.
-        do = self.loadDatabaseObject(doId)
+        do = self.manager.loadDatabaseObject(doId)
         
         # Unpack and assign the field values.
         for i in range(0, numFields):
@@ -285,7 +254,7 @@ class DatabaseServer:
                 do.fields[fieldName] = unpackedValue
         
         # Save the database object to make sure we don't lose our changes.
-        self.saveDatabaseObject(do)
+        self.manager.saveDatabaseObject(do)
         
     def createStoredObject(self, sender, datagram):
         """
@@ -316,7 +285,7 @@ class DatabaseServer:
         for i in range(0, numFields):
             fieldValues.append(di.getString().encode('ISO-8859-1'))
         
-        if dbObjectType >= len(self.dbObjectClassNames):
+        if not dbObjectType in self.dcObjectTypes:
             dg = Datagram()
             # Add our context.
             dg.addUint32(context)
@@ -327,11 +296,8 @@ class DatabaseServer:
             self.messageDirector.sendMessage([sender], 20100000, DBSERVER_CREATE_STORED_OBJECT_RESP, dg)
             return
         
-        # Get the dc class name for our object type.
-        dclassName = self.dbObjectClassNames[dbObjectType]
-        
-        # Create a database object from our dc class name.
-        dbObject = self.createDatabaseObject(dclassName)
+        # Create a database object from our dc object type.
+        dbObject = self.manager.createDatabaseObject(dbObjectType)
         
         # Unpack and assign the field values.
         for i in range(0, numFields):
@@ -347,7 +313,7 @@ class DatabaseServer:
                 dbObject.fields[fieldName] = unpackedValue
                 
         # Save the database object to make sure we don't lose our changes.
-        self.saveDatabaseObject(dbObject)
+        self.manager.saveDatabaseObject(dbObject)
         
         dg = Datagram()
         
@@ -381,12 +347,12 @@ class DatabaseServer:
         # Rain or shine. We want the context.
         dg.addUint32(context)
         
-        if not self.hasDatabaseObject(doId):
+        if not self.manager.hasDatabaseObject(doId):
             dg.addUint8(1) # Failed to get our avatar, So we can't get their houses either!
             self.messageDirector.sendMessage([sender], 20100000, DBSERVER_GET_ESTATE_RESP, dg)
             return
             
-        currentAvatar = self.loadDatabaseObject(doId)
+        currentAvatar = self.manager.loadDatabaseObject(doId)
         
         # Somehow we don't have an account!
         if not 'setDISLid' in currentAvatar.fields:
@@ -397,12 +363,12 @@ class DatabaseServer:
         accountId = currentAvatar.fields['setDISLid'][0]
         
         # Our account doesn't exist!?
-        if not self.hasDatabaseObject(accountId):
+        if not self.manager.hasDatabaseObject(accountId):
             dg.addUint8(1) # Failed to get our avatar, So we can't get their houses either!
             self.messageDirector.sendMessage([sender], 20100000, DBSERVER_GET_ESTATE_RESP, dg)
             return
             
-        account = self.loadDatabaseObject(accountId)
+        account = self.manager.loadDatabaseObject(accountId)
         
         # Pre-define this here.
         estate = None
@@ -410,14 +376,14 @@ class DatabaseServer:
         
         # We need to create an Estate!
         if not 'ESTATE_ID' in account.fields or account.fields['ESTATE_ID'] == 0:
-            estate = self.createDatabaseObject("DistributedEstate")
+            estate = self.manager.createDatabaseObjectFromName("DistributedEstate")
             houseIds = [0, 0, 0, 0, 0, 0]
             account.update("ESTATE_ID", estate.doId)
             account.update("HOUSE_ID_SET", houseIds)
             if not estate.doId in self.stateServer.dbObjects:
                 self.stateServer.dbObjects[estate.doId] = DistributedObject(estate.doId, estate.dclass, 0, 0)
         else:
-            estate = self.loadDatabaseObject(account.fields['ESTATE_ID'])
+            estate = self.manager.loadDatabaseObject(account.fields['ESTATE_ID'])
             houseIds = account.fields["HOUSE_ID_SET"]
             if not estate.doId in self.stateServer.dbObjects:
                 self.stateServer.dbObjects[estate.doId] = DistributedObject(estate.doId, estate.dclass, 0, 0)
@@ -429,7 +395,7 @@ class DatabaseServer:
         # First create all our blank houses.
         for i in range(0, len(houseIds)):
             if houseIds[i] == 0:
-                house = self.createDatabaseObject("DistributedHouse")
+                house = self.manager.createDatabaseObjectFromName("DistributedHouse")
                 house.update("setName", "")
                 house.update("setAvatarId", 0)
                 house.update("setColor", i)
@@ -438,7 +404,7 @@ class DatabaseServer:
                     self.stateServer.dbObjects[house.doId] = DistributedObject(house.doId, house.dclass, 0, 0)
                 houses.append(house)
             else: # If the house already exists... Just generate and store it.
-                house = self.loadDatabaseObject(houseIds[i])
+                house = self.manager.loadDatabaseObject(houseIds[i])
                 house.update("setColor", i)
                 if not house.doId in self.stateServer.dbObjects:
                     self.stateServer.dbObjects[house.doId] = DistributedObject(house.doId, house.dclass, 0, 0)
@@ -451,15 +417,15 @@ class DatabaseServer:
             avDoId = avatars[i]
             
             # If we're missing the avatar for some reason... Skip!
-            if not self.hasDatabaseObject(avDoId):
+            if not self.manager.hasDatabaseObject(avDoId):
                 continue
                 
             # Load in our avatar.
-            avatar = self.loadDatabaseObject(avDoId)
+            avatar = self.manager.loadDatabaseObject(avDoId)
             
             # Load our pet for this avatar in question in.
             if "setPetId" in avatar.fields and avatar.fields["setPetId"][0] != 0:
-                pet = self.loadDatabaseObject(avatar.fields["setPetId"][0])
+                pet = self.manager.loadDatabaseObject(avatar.fields["setPetId"][0])
                 if not pet.doId in self.stateServer.dbObjects:
                     self.stateServer.dbObjects[pet.doId] = DistributedObject(pet.doId, pet.dclass, 0, 0)
                 pets.append(pet)
@@ -467,7 +433,7 @@ class DatabaseServer:
             avPositionIndex = avatar.fields["setPosIndex"][0]
             # If for some reason theres no house here... Create one!
             if houseIds[avPositionIndex] == 0:
-                house = self.createDatabaseObject("DistributedHouse")
+                house = self.manager.createDatabaseObjectFromName("DistributedHouse")
                 house.update("setName", avatar.fields["setName"][0])
                 house.update("setAvatarId", avDoId)
                 house.update("setColor", avPositionIndex)
@@ -475,7 +441,7 @@ class DatabaseServer:
                 if not house.doId in self.stateServer.dbObjects:
                     self.stateServer.dbObjects[house.doId] = DistributedObject(house.doId, house.dclass, 0, 0)
             else: # Update our houses info just in case ours changed!
-                house = self.loadDatabaseObject(houseIds[avPositionIndex])
+                house = self.manager.loadDatabaseObject(houseIds[avPositionIndex])
                 house.update("setName", avatar.fields["setName"][0])
                 house.update("setAvatarId", avDoId)
                 house.update("setColor", avPositionIndex)
@@ -487,7 +453,7 @@ class DatabaseServer:
         account.update("HOUSE_ID_SET", houseIds)
         
         # Make sure our account saved it's changes.
-        self.saveDatabaseObject(account)
+        self.manager.saveDatabaseObject(account)
         
         # We've succeeded in loading everything we need to, So we add this indicating success.
         dg.addUint8(0)
@@ -587,7 +553,7 @@ class DatabaseServer:
         dg = Datagram()
         
         # If one or netiher of the database objects exist. They can NOT become friends.
-        if not self.hasDatabaseObject(friendIdA) or not self.hasDatabaseObject(friendIdB):
+        if not self.manager.hasDatabaseObject(friendIdA) or not self.manager.hasDatabaseObject(friendIdB):
             dg.addUint8(False)
             dg.addUint32(context)
             # Send out our response.
@@ -595,8 +561,8 @@ class DatabaseServer:
             return
             
         # Load the database objects for our friends.
-        friendA = self.loadDatabaseObject(friendIdA)
-        friendB = self.loadDatabaseObject(friendIdB)
+        friendA = self.manager.loadDatabaseObject(friendIdA)
+        friendB = self.manager.loadDatabaseObject(friendIdB)
         
         # If one or either can't possibly make friends, We will respond with a failure.
         if not friendA.dclass.getFieldByName("setFriendsList") or not friendB.dclass.getFieldByName("setFriendsList"):
@@ -654,5 +620,5 @@ class DatabaseServer:
         self.messageDirector.sendMessage([sender], 20100000, DBSERVER_MAKE_FRIENDS_RESP, dg)
         
         # Save the database objects to make sure we don't lose our changes.
-        self.saveDatabaseObject(friendA)
-        self.saveDatabaseObject(friendB)
+        self.manager.saveDatabaseObject(friendA)
+        self.manager.saveDatabaseObject(friendB)

@@ -20,6 +20,7 @@ class PyOTP:
         self.dclassesByName = {}
         self.dclassesByNumber = {}
         
+        # Get our Panda3D Virtual File System.
         vfs = VirtualFileSystem.getGlobalPtr()
         
         # Look for our dc file locations and read them in.
@@ -150,6 +151,8 @@ class PyOTP:
             self.dclassesByName[className] = dclass
             if number >= 0:
                 self.dclassesByNumber[number] = dclass
+                
+        self.dc = dcFile
                     
 
 if __name__ == "__main__":
