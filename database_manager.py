@@ -1,5 +1,7 @@
 import base64, hashlib, os, threading, traceback, uuid
 
+from datetime import datetime
+
 dbmType = "gnu"
 try:
     # If we can, Use semidbm as a fast db access method.
@@ -14,7 +16,7 @@ from pprint import pformat
 # Use pymysql for our SQL connection.
 import pymysql as MySQLdb
 
-from panda3d.core import ConfigVariableString, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
+from panda3d.core import ConfigVariableInt, ConfigVariableString, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
 from panda3d.direct import DCPacker
 
 from database_object import DatabaseObject
@@ -358,12 +360,24 @@ class DatabaseBackendPacked(DatabaseBackendFile):
         return max([int(filename[:-4]) for filename in files if filename.endswith(self.databaseExtension)]) + 1
         
 class DatabaseBackendMySQL(DatabaseBackend):
+    # Types for reading our field datagrams.
+    T_NONE = 0
+    T_BOOL = 1
+    T_UINT = 2
+    T_INT = 3
+    T_FLOAT = 4
+    T_STRING = 5
+    T_BLOB = 6
+    T_TUPLE = 7
+    T_LIST = 8
+    T_DICT = 9
+
     def __init__(self, manager):
         DatabaseBackend.__init__(self, manager)
 
         # Get the config variables for our MySQL database.
         self.host = ConfigVariableString("mysql-host", "localhost").getValue()
-        self.port = 3306
+        self.port = ConfigVariableInt("mysql-port", 3306).getValue()
         self.user = ConfigVariableString("mysql-user", "").getValue()
         self.passwd = ConfigVariableString("mysql-passwd", "").getValue()
         self.db = None
@@ -625,25 +639,57 @@ class DatabaseBackendMySQL(DatabaseBackend):
             
         return False
         
+    def __unpackValue(self, value=None, field=None, dgi=None):
+        if isinstance(value, str): # Make sure we're working with a bytes object.
+            value = value.encode("utf-8")
+            
+        if not dgi:
+            dg = Datagram(value)
+            dgi = DatagramIterator(dg)
+        
+        typeCode = dgi.getUint8()
+        
+        if typeCode == self.T_NONE:
+            value = None
+        elif typeCode == self.T_BOOL:
+            value = dgi.getBool()
+        elif typeCode == self.T_UINT:
+            value = dgi.getUint64()
+        elif typeCode == self.T_INT:
+            value = dgi.getInt64()
+        elif typeCode == self.T_FLOAT:
+            value = dgi.getFloat64()
+        elif typeCode == self.T_STRING:
+            value = dgi.getString32()
+        elif typeCode == self.T_BLOB:
+            value = dgi.getBlob32()
+        elif typeCode == self.T_TUPLE:
+            value = ()
+            size = dgi.getUint32()
+            for i in range(0, size):
+                value += (self.__unpackValue(field=field, dgi=dgi),)
+        elif typeCode == self.T_LIST:
+            value = []
+            size = dgi.getUint32()
+            for i in range(0, size):
+                value.append(self.__unpackValue(field=field, dgi=dgi))
+        elif typeCode == self.T_DICT:
+            value = {}
+            size = dgi.getUint32()
+            for i in range(0, size):
+                # Dicts have both an key and a value. We pack them one after another.
+                key = self.__unpackValue(field=field, dgi=dgi)
+                item = self.__unpackValue(field=field, dgi=dgi)
+                value[key] = item
+        else:
+            print("Failed to unpack unknown typecode for field '%s'!" % (field.getName()))
+
+        return value
+        
     def handleLoad(self, doId):
         """
         Loads the data from database to memory safely.
         """
-        
-        def unpackValue(do, field, fieldName, value):
-            if isinstance(value, bytes):
-                # Unpack our field.
-                try:
-                    value = do.unpackField(fieldName, value)
-                except Exception as e:
-                    print("ERROR: Failed to unpack field '%s'!, Resulting to default if possible." % (fieldName))
-                    print(fieldName, "\n", value, "\n", field.getDefaultValue())
-                    if not field.hasDefaultValue():
-                        #traceback.print_exc()
-                        raise e
-                    value = do.unpackField(fieldName, field.getDefaultValue())
-                    
-            return value
 
         cursor = MySQLdb.cursors.DictCursor(self.db)
         try:
@@ -688,7 +734,7 @@ class DatabaseBackendMySQL(DatabaseBackend):
                 if not field: continue
                 
                 # Unpack our field.
-                value = unpackValue(do, field, fieldName, value)
+                value = self.__unpackValue(value=value, field=field)
                 
                 fields[fieldName] = value 
                 
@@ -704,32 +750,76 @@ class DatabaseBackendMySQL(DatabaseBackend):
             
         return None
         
+    def __packValue(self, value, field, root=True):
+        dg = Datagram()
+        dgi = DatagramIterator(dg)
+        
+        if value == None:
+            if root and field and field.hasDefaultValue():
+                # Unpack the default value so we can use it.
+                packer = DCPacker()
+                packer.setUnpackData(valueData)
+                packer.beginUnpack()
+                blob = self.__packValue(packer.unpackArgs(), field, root=False) # Specially pack the value for our interest.
+                packer.endUnpack()
+                # Append the packed data to our dg.
+                dg.appendData(blob)
+            else:
+                dg.addUint8(self.T_NONE)
+        elif isinstance(value, bool):
+            dg.addUint8(self.T_BOOL)
+            dg.addBool(value)
+        elif isinstance(value, int):
+            if value >= 0:
+                dg.addUint8(self.T_UINT)
+                dg.addUint64(value)
+            else:
+                dg.addUint8(self.T_INT)
+                dg.addInt64(value)
+        elif isinstance(value, float):
+            dg.addUint8(self.T_FLOAT)
+            dg.addFloat64(value)
+        elif isinstance(value, str):
+            dg.addUint8(self.T_STRING)
+            dg.addString32(value)
+        elif isinstance(value, bytes):
+            dg.addUint8(self.T_BLOB)
+            dg.addBlob32(value)
+        elif isinstance(value, tuple):
+            dg.addUint8(self.T_TUPLE)
+            dg.addUint32(len(value))
+            for i in range(0, len(value)):
+                blob = self.__packValue(value[i], field, root=False)
+                # Append the packed data to our dg.
+                dg.appendData(blob)
+        elif isinstance(value, list):
+            dg.addUint8(self.T_LIST)
+            dg.addUint32(len(value))
+            for i in range(0, len(value)):
+                blob = self.__packValue(value[i], field, root=False)
+                # Append the packed data to our dg.
+                dg.appendData(blob)
+        elif isinstance(value, dict):
+            dg.addUint8(self.T_DICT)
+            dg.addUint32(len(value))
+            for i, j in value.items():
+                keyBlob = self.__packValue(i, field, root=False)
+                valueBlob = self.__packValue(k, field, root=False)
+                # Append the packed data to our dg.
+                dg.appendData(keyBlob)
+                dg.appendData(valueBlob)
+        else:
+            print("Failed to pack value '%s' for %s!" % (value, field.getName()))
+            dg.addUint8(self.T_NONE)
+
+        value = dgi.getRemainingBytes() # .decode("latin-1")
+        return value
+        
     def handleSave(self, do):
         """
         Dumps the data from memory out to database safely.
         """
         
-        def packValue(do, field, fieldName, value):
-            if isinstance(value, list) or isinstance(value, dict) or isinstance(value, tuple) or isinstance(value, str) or isinstance(value, bytes):
-                # If our value is None and our field has a default value, Use that instead.
-                if not value and field.hasDefaultValue():
-                    value = field.getDefaultValue().decode("latin1")
-                else:
-                    value = do.packField(fieldName, value).decode("latin1")
-            elif not value and field.hasDefaultValue():
-                valueData = field.getDefaultValue()
-                # Unpack the default value so we can use it.
-                packer = DCPacker()
-                packer.setUnpackData(valueData)
-                packer.beginUnpack()
-                value = packValue(packer.unpackArgs()) # Repack the value.
-                packer.endUnpack()
-            elif not value:
-                print("Don't know how to pack value for field '%s' which has no value passed!" % (fieldName))
-                value = b"".decode("latin1")
-                #raise Exception("Don't know how to pack value for field '%s' which has no value passed!" % (fieldName))
-            
-            return value
 
         cursor = self.db.cursor()
         try:
@@ -755,35 +845,28 @@ class DatabaseBackendMySQL(DatabaseBackend):
                     field = do.dclass.getFieldByName(fieldName)
                     if not field or not field.isDb():
                         continue
-                    # If our value is None and our field has a default value, Use that instead.
-                    print(fieldName, value)
-                    value = packValue(do, field, fieldName, value)
-                    #print(fieldName, base64.b64encode(value.encode()).decode("utf-8"), "\n")
-                    print(fieldName, value.encode(), "\n")
+                    value = self.__packValue(value, field)
                     # Some types of value need different packing then others.
                     if isinstance(value, str):
-                        fs = "UPDATE %s_fields SET %s='%s' WHERE doId=%%s;" % (do.dclass.getName(), fieldName, value)
-                        cursor.execute(fs, (do.doId,))
+                        fs = "UPDATE %s_fields SET %s='%s' WHERE doId=%s;" % (do.dclass.getName(), fieldName, MySQLdb.converters.escape_string(value), str(do.doId))
+                        cursor.execute(fs)
                     else:
-                        fs = "UPDATE %s_fields SET %s='%%s' WHERE doId=%%s;" % (do.dclass.getName(), fieldName)
-                        cursor.execute(fs, (value, do.doId,))
+                        fs = "UPDATE %s_fields SET %s=%%s WHERE doId=%s;" % (do.dclass.getName(), fieldName, str(do.doId))
+                        cursor.execute(fs, (value,))
             else:
                 # Just update and save our fields!
                 for fieldName, value in do.getFields().items():
                     field = do.dclass.getFieldByName(fieldName)
                     if not field or not field.isDb():
                         continue
-                    print(fieldName, value)
-                    value = packValue(do, field, fieldName, value)
-                    #print(fieldName, base64.b64encode(value.encode()).decode("utf-8"), "\n")
-                    print(fieldName, value.encode(), "\n")
+                    value = self.__packValue(value, field)
                     # Some types of value need different packing then others.
                     if isinstance(value, str):
-                        fs = "UPDATE %s_fields SET %s='%s' WHERE doId=%%s;" % (do.dclass.getName(), fieldName, value)
-                        cursor.execute(fs, (do.doId,))
+                        fs = "UPDATE %s_fields SET %s='%s' WHERE doId=%s;" % (do.dclass.getName(), fieldName, value, str(do.doId))
+                        cursor.execute(fs)
                     else:
-                        fs = "UPDATE %s_fields SET %s='%%s' WHERE doId=%%s;" % (do.dclass.getName(), fieldName)
-                        cursor.execute(fs, (value, do.doId,))
+                        fs = "UPDATE %s_fields SET %s=%%s WHERE doId=%s;" % (do.dclass.getName(), fieldName, str(do.doId))
+                        cursor.execute(fs, (value,))
                 
             
             self.db.commit() # End transaction
@@ -887,10 +970,9 @@ class DatabaseManager:
 
         # Generate a unique indentifier for the database object.
         m = hashlib.md5()
-        m.update(("%s-%d" % (str(dclass.getName()), doId)).encode('utf-8'))
+        m.update(("%s-%d-%s" % (str(dclass.getName()), doId, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))).encode('utf-8'))
 
         doUuId = uuid.UUID(m.hexdigest(), version=4)
-        #doUuId = uuid.UUID(int=doId, version=4)
 
         # We generate the DatabaseObject
         do = DatabaseObject(self, doId, doUuId, dclass)
@@ -900,15 +982,14 @@ class DatabaseManager:
         for n in range(dclass.getNumInheritedFields()):
             field = dclass.getInheritedField(n)
             if field.isDb():
-                '''
                 packer.setUnpackData(field.getDefaultValue())
                 packer.beginUnpack(field)
                 do.fields[field.getName()] = field.unpackArgs(packer)
                 packer.endUnpack()
-                '''
+                
                 # Unpack our default value then insert it into our dos fields.
-                value = do.unpackField(field.getName(), field.getDefaultValue())
-                do.fields[field.getName()] = value #do.packField(field.getName(), value)
+                #value = do.unpackField(field.getName(), field.getDefaultValue())
+                #do.fields[field.getName()] = value #do.packField(field.getName(), value)
                 
         # Now we set the fields to the ones we got early.
         for fieldName, *values in fields.items():
@@ -930,7 +1011,7 @@ class DatabaseManager:
 
         # Set our DC Object Type if we have it!
         if dclass.getName() in list(self.dcObjectTypeFromName.keys()):
-            do.fields["DcObjectType"] = do.packField("DcObjectType", dclass.getName())
+            do.fields["DcObjectType"] = dclass.getName()
 
         # We save the object
         self.saveDatabaseObject(do)

@@ -162,7 +162,10 @@ class Client:
                     self.account.update("LAST_LOGIN", now.strftime("%Y-%m-%d %H:%M:%S"))
                 else:
                     # Fill out our account fields that have no default value.
-                    fields = {"ESTATE_ID": 0,
+                    fields = {"ACCOUNT_AV_SET": [0, 0, 0, 0, 0, 0,],
+                              "pirateAvatars": [0, 0, 0, 0, 0, 0,],
+                              "HOUSE_ID_SET": [0, 0, 0, 0, 0, 0,],
+                              "ESTATE_ID": 0,
                               "PLAYED_MINUTES": "",
                               "PLAYED_MINUTES_PERIOD": "",
                               "CREATED": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -373,6 +376,10 @@ class Client:
             
             # We can create the avatar
             avatar = self.databaseServer.manager.createDatabaseObjectFromName("DistributedToon", fields)
+            
+            if not avatar:
+                print("We failed to properly create an avatar!")
+                return
 
             # We save the avatar in the account
             accountAvSet[avPosition] = avatar.doId
