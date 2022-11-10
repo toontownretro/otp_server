@@ -743,7 +743,72 @@ class Client:
             if doId != self.avatarId:
                 print("Client wants to move an object it doesn't own")
                 return
+                
+            if not self.databaseServer.manager.hasDatabaseObject(doId):
+                print("Client tried to move an object that doesn't exist!")
+                return
+                
+            # Toontown Game Specfic Code
+            avatar = self.databaseServer.manager.loadDatabaseObject(doId)
+            canonZoneId = zoneId
+            canonHoodId = zoneId
+            
+            # Get our canonical zone id.
+            if canonZoneId >= 22000 and canonZoneId < 61000:
+                canonZoneId = (canonZoneId % 2000)
+                if canonZoneId < 1000:
+                    canonZoneId = canonZoneId + 2000
+                else:
+                    canonZoneId = canonZoneId - 1000 + 8000
+                    
+            # Get our hood id from it.
+            canonHoodId = canonZoneId - (canonZoneId % 1000)
+            
+            if "setDefaultShard" in avatar.fields:
+                # We should probably check this in some way.
+                avatar.fields["setDefaultShard"] = (parentId,)
+                self.handleFieldUpdate(avatar.doId, "setDefaultShard", avatar.fields["setDefaultShard"])
 
+            if "setDefaultZone" in avatar.fields and "setLastHood" in avatar.fields:
+                if avatar.fields["setDefaultZone"] != 0: # We don't want Welcome Valley as our last hood.
+                    avatar.fields["setLastHood"] = avatar.fields["setDefaultZone"]
+                    self.handleFieldUpdate(avatar.doId, "setLastHood", avatar.fields["setLastHood"])
+
+            if "setDefaultZone" in avatar.fields and not ((zoneId >= 61000) and (zoneId < (1 << 20))):
+                defaultZoneId = zoneId
+                
+                # If we're in Welcome Valley, Then we ignore it's sub zone changes. Including for Goofy Speedway.
+                # Instead our default zone id will be for the Welcome Valley Token.
+                if defaultZoneId >= 22000 and defaultZoneId < 61000:
+                    defaultZoneId = 0 # Set the default zone id to 0, Which is the Welcome Valley zone token.
+                else:
+                    # Get our hood id from it.
+                    defaultZoneId = defaultZoneId - (defaultZoneId % 1000)
+                avatar.fields["setDefaultZone"] = (defaultZoneId,)
+                self.handleFieldUpdate(avatar.doId, "setDefaultZone", avatar.fields["setDefaultZone"])
+                
+            if "setZonesVisited" in avatar.fields and not ((zoneId >= 61000) and (zoneId < (1 << 20))):
+                zonesVisted = avatar.fields["setZonesVisited"][0]
+                
+                # If we haven't visted that zone before and it's not Welcome Valleys Token... We have now!
+                if canonHoodId != 0 and not canonHoodId in zonesVisted:
+                    zonesVisted.append(canonHoodId)
+                    avatar.fields["setZonesVisited"] = (zonesVisted,)
+                    
+                self.handleFieldUpdate(avatar.doId, "setZonesVisited", avatar.fields["setZonesVisited"])
+                
+            if "setHoodsVisited" in avatar.fields and not ((zoneId >= 61000) and (zoneId < (1 << 20))):
+                zonesVisted = avatar.fields["setHoodsVisited"][0]
+                
+                # If we haven't visted that zone before and it's not Welcome Valleys Token... We have now!
+                if canonHoodId != 0 and not canonHoodId in zonesVisted:
+                    zonesVisted.append(canonHoodId)
+                    avatar.fields["setHoodsVisited"] = (zonesVisted,)
+                
+                self.handleFieldUpdate(avatar.doId, "setHoodsVisited", avatar.fields["setHoodsVisited"])
+                
+            self.databaseServer.manager.saveDatabaseObject(avatar)
+                
             # We tell the StateServer that we're moving an object.
             dg = Datagram()
             dg.addUint32(parentId)
@@ -767,8 +832,8 @@ class Client:
                             # Make sure we delete it.
                             del target.fields["setFriendsList"][0][i]
                             break
-                        # If we aren't ever found. We weren't on their list to begin with.
-
+                        # If we aren't ever found. We weren't on their list to begin with.  
+                
                 # Save the removal to the database.
                 self.databaseServer.saveDatabaseObject(target)
 
@@ -1507,7 +1572,34 @@ class Client:
             self.sock.send(bytes(dg))
         except:
             print("Tried to send connection to client, But connection was closed!")
+            
+    def handleFieldUpdate(self, doId, fieldName, value):
+        # Can we send this field? If not just return.
+        if not doId in self.stateServer.objects and not doId in self.stateServer.dbObjects:
+            print("Attempted to update a field '%s' but doId %d was not found" % (fieldName, doId))
+            return
 
+        if not doId in self.stateServer.dbObjects:
+            do = self.stateServer.objects[doId]
+        else:
+            do = self.stateServer.dbObjects[doId]
+            
+        field = do.dclass.getFieldByName(fieldName)
+        if not field:
+            print("Attempted to update a field '%s' but field does not exist for %d." % (fieldName, doId))
+            return
+        
+        packer = DCPacker()
+        packer.rawPackUint32(do.doId)
+        packer.rawPackUint16(field.getNumber())
+        packer.beginPack(field)
+        field.packArgs(packer, value)
+        packOk = packer.endPack()
+        # If our packing didn't go well, We won't send the update.
+        if packOk:
+            dg = Datagram(packer.getBytes())
+            # Send the message as if it was from the dos parent.
+            self.messageDirector.sendMessage([do.doId], do.parentId, STATESERVER_OBJECT_UPDATE_FIELD, dg)
 
     def hasInterest(self, parentId, zoneId):
         """
