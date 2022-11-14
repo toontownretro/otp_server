@@ -325,7 +325,7 @@ class Client:
 
         else:
             print("Received unexpected/unknown messagetype %d from connection: %s:%d!" % (msgType, self.addr[0], self.addr[1]))
-            self.disconnect(220) # Internal error in the clients state machine. Contact Developers for correction.
+            self.disconnect(220) # Internal error in the client state machine. Contact developers for correction.
         
         
     def handle_authenticated_datagram(self, msgType, di):
@@ -340,6 +340,7 @@ class Client:
             # Is avPosition valid?
             if not 0 <= avPosition < 6:
                 print("Client sent an invalid av position")
+                self.disconnect(351) # The client tried to load an invalid avatar position in CLIENT_CREATE_AVATAR.
                 return
 
             # Doesn't it already have an avatar at this slot?
@@ -347,6 +348,7 @@ class Client:
 
             if accountAvSet[avPosition] and self.databaseServer.manager.hasDatabaseObject(accountAvSet[avPosition]):
                 print("Client tried to overwrite an avatar")
+                self.disconnect(350) # The client tried to overwrite an avatar in CLIENT_CREATE_AVATAR.
                 return
                 
             fields = {}

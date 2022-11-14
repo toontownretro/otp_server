@@ -10,6 +10,12 @@ try:
 except:
     # Anydbm was made into dbm.ndbm but we'd rather use dbm.gnu anyways.
     import dbm.gnu as dbm
+    
+try:
+    # Try to use simplejson if we can, Otherwise just use normal json.
+    import simplejson as json
+except:
+    import json
 
 from pprint import pformat
 
@@ -104,21 +110,20 @@ class DatabaseBackendFile(DatabaseBackend):
         DatabaseBackend.__init__(self, manager)
         
         # Database Configs
-        self.databaseDirectory = Filename(os.path.expandvars(ConfigVariableString('database-directory', "database").getValue()))
-        self.databaseExtension = ConfigVariableString('database-extension', ".bin").getValue()
-        self.databaseStoreFile = ConfigVariableString('database-storage', "game-accounts-%s.db" % (dbmType)).getValue()
+        self.databaseDirectory = Filename(os.path.normpath(os.path.expandvars(ConfigVariableString('database-directory', "database").getValue())))
+        self.databaseBackendName = ConfigVariableString('database-backend', "raw").getValue()
+        self.databaseStoreFile = ConfigVariableString('database-storage', "game-accounts-%s-%s.db" % (self.databaseBackendName, dbmType)).getValue()
         self.databaseStore = dbm.open(self.databaseDirectory + "/" + self.databaseStoreFile, 'c')
+        
+        # This config variable should be overwritten by our inheritors. 
+        self.databaseExtension = ".bin"
         
         # Get our Panda3D Virtual File System, And keep a reference.
         self.vfs = VirtualFileSystem.getGlobalPtr()
         
         if not self.vfs.exists(self.databaseDirectory):
             self.vfs.makeDirectoryFull(self.databaseDirectory)
-
-class DatabaseBackendRaw(DatabaseBackendFile):
-    def __init__(self, manager):
-        DatabaseBackendFile.__init__(self, manager)
-        
+            
     def addToAccountServer(self, key, value):
         """
         Add a value to our database storage, If we don't have one.
@@ -150,7 +155,7 @@ class DatabaseBackendRaw(DatabaseBackendFile):
         """
         if not self.hasAccountServer(): 
             return False
-        
+
         return str(key).encode("utf-8") in self.databaseStore.keys()
     
     def hasAccountServer(self):
@@ -158,6 +163,31 @@ class DatabaseBackendRaw(DatabaseBackendFile):
         Check if we have a file or server for account database storage.
         """
         return self.databaseStore != None
+        
+    def exists(self, doId):
+        """
+        Return if the specified doId exists in the database.
+        """
+        return os.path.isfile(os.path.join(self.databaseDirectory.getFullpath(), str(doId) + self.databaseExtension))
+        
+    def getNextDoId(self):
+        """
+        Get the next open doId for the backend we're using.
+        """
+        
+        # We get a doId
+        files = os.listdir(self.databaseDirectory)
+        
+        if sum(filename.endswith(self.databaseExtension) for filename in files) == 0:
+            return 10000000
+            
+        return max([int(filename[:-(len(self.databaseExtension))]) for filename in files if filename.endswith(self.databaseExtension)]) + 1
+
+class DatabaseBackendRaw(DatabaseBackendFile):
+    def __init__(self, manager):
+        DatabaseBackendFile.__init__(self, manager)
+        
+        self.databaseExtension = ConfigVariableString('database-extension', ".raw").getValue()
             
     def handleLoad(self, doId):
         """
@@ -198,68 +228,11 @@ class DatabaseBackendRaw(DatabaseBackendFile):
             data = b"# DatabaseObject\n" + pformat((do.dclass.getName(), do.version, do.doId, str(do.uuId), do.fields), width=-1, sort_dicts=True).encode("utf8")
             file.write(data)
         
-    def exists(self, doId):
-        """
-        Return if the specified doId exists in the database.
-        """
-        return self.vfs.isRegularFile(Filename(os.path.join(self.databaseDirectory.getFullpath(), str(doId) + self.databaseExtension)))
-        
-    def getNextDoId(self):
-        """
-        Get the next open doId for the backend we're using.
-        """
-        
-        # We get a doId
-        files = os.listdir(self.databaseDirectory)
-        
-        if sum(filename.endswith(self.databaseExtension) for filename in files) == 0:
-            return 10000000
-            
-        return max([int(filename[:-4]) for filename in files if filename.endswith(self.databaseExtension)]) + 1
-        
 class DatabaseBackendPacked(DatabaseBackendFile):
     def __init__(self, manager):
         DatabaseBackendFile.__init__(self, manager)
         
-    def addToAccountServer(self, key, value):
-        """
-        Add a value to our database storage, If we don't have one.
-        An exception will be raised.
-        """
-        if not self.hasAccountServer():
-            raise Exception("Tried to add value to account server, But we don't have one!")
-            
-        self.databaseStore[str(key).encode("utf-8")] = str(value)
-        
-        # If our database has syncing. Then let's sync now.
-        if getattr(self.databaseStore, 'sync', None):
-            self.databaseStore.sync()
-        
-    def getFromAccountServer(self, key):
-        """
-        Get the value of a key in our database storage.
-        If we don't have a storage, We always return None.
-        """
-        if not self.hasAccountServer(): 
-            return None
-            
-        return self.databaseStore[str(key).encode("utf-8")]
-    
-    def inAccountServer(self, key):
-        """
-        Return if a key is within' our databases storage.
-        If we don't have a storage, This is always False.
-        """
-        if not self.hasAccountServer(): 
-            return False
-
-        return str(key).encode("utf-8") in self.databaseStore.keys()
-    
-    def hasAccountServer(self):
-        """
-        Check if we have a file or server for account database storage.
-        """
-        return self.databaseStore != None
+        self.databaseExtension = ConfigVariableString('database-extension', ".bin").getValue()
             
     def handleLoad(self, doId):
         """
@@ -339,25 +312,55 @@ class DatabaseBackendPacked(DatabaseBackendFile):
 
             data = packer.getBytes()
             file.write(data)
-        
-    def exists(self, doId):
-        """
-        Return if the specified doId exists in the database.
-        """
-        return self.vfs.isRegularFile(Filename(os.path.join(self.databaseDirectory.getFullpath(), str(doId) + self.databaseExtension)))
-        
-    def getNextDoId(self):
-        """
-        Get the next open doId for the backend we're using.
-        """
-        
-        # We get a doId
-        files = os.listdir(self.databaseDirectory)
-        
-        if sum(filename.endswith(self.databaseExtension) for filename in files) == 0:
-            return 10000000
             
-        return max([int(filename[:-4]) for filename in files if filename.endswith(self.databaseExtension)]) + 1
+class DatabaseBackendJSON(DatabaseBackendFile):
+    def __init__(self, manager):
+        DatabaseBackendFile.__init__(self, manager)
+        
+        self.databaseExtension = ConfigVariableString('database-extension', ".json").getValue()
+            
+    def handleLoad(self, doId):
+        """
+        Loads the data from database to memory safely.
+        """
+        with open(os.path.join(self.databaseDirectory, str(doId) + self.databaseExtension), "r") as file:
+            dclassName, version, doId, uuId, fieldsData = json.load(file)
+            
+            # Close our file, We've read the data.
+            file.close()
+            
+            # Make sure our version is a tuple.
+            version = tuple(version)
+            
+            minVersion = DatabaseObject.minVersion
+            lastVersion = DatabaseObject.version
+            
+            # Check for our minimum supported version.
+            if version < minVersion or version > lastVersion:
+                raise Exception("Tried to read database object with version %d.%d.%d, But only %d.%d.%d through %d.%d.%d is supported!" % (version[0], version[1], version[2], minVersion[0], minVersion[1], minVersion[2], lastVersion[0], lastVersion[1], lastVersion[2]))
+
+            # Convert the string back into a UUID instance.
+            uuId = uuid.UUID(uuId)
+            
+            dclass = self.dc.getClassByName(dclassName)
+            
+            do = DatabaseObject(self.manager, doId, uuId, dclass)
+            do.setFields(fieldsData)
+            return do
+            
+        print("ERROR: Failed to load Database Object %d!" % (doId))
+        return None
+            
+    def handleSave(self, do):
+        """
+        Dumps the data from memory out to database safely.
+        """
+        with open(os.path.join(self.databaseDirectory, str(do.doId) + self.databaseExtension), "w") as file:
+            doData = (do.dclass.getName(), do.version, do.doId, str(do.uuId), do.fields)
+            # Dump our data out to json and into our file.
+            json.dump(doData, file, ensure_ascii=False, sort_keys=True, indent=2)
+            # Close our file, Our data is now written.
+            file.close()
         
 class DatabaseBackendMySQL(DatabaseBackend):
     # Types for reading our field datagrams.
@@ -950,6 +953,8 @@ class DatabaseManager:
             self.backend = DatabaseBackendRaw(self)
         elif self.backendName == "packed":
             self.backend = DatabaseBackendPacked(self)
+        elif self.backendName == "json":
+            self.backend = DatabaseBackendJSON(self)
         elif self.backendName == "sql":
             self.backend = DatabaseBackendMySQL(self)
         else: # Default to raw.
