@@ -1,4 +1,12 @@
-import hashlib, os, uuid
+import hashlib, os, sys, uuid, string, random
+
+from datetime import datetime, timedelta
+
+try:
+    # Try to use simplejson if we can, Otherwise just use normal json.
+    import simplejson as json
+except:
+    import json
 
 from panda3d.core import ConfigVariableString, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
 from panda3d.direct import DCPacker
@@ -31,6 +39,11 @@ class DatabaseServer:
         
         # Create our Database Manager. 
         self.manager = DatabaseManager(self)
+        
+        self.rngSeed = None
+        self.secretFriendCodes = {}
+        
+        self.databaseDirectory = os.path.normpath(os.path.expandvars(ConfigVariableString('database-directory', "database").getValue()))
         
     def caculateDCObjects(self):
         dcObjectCount = 0
@@ -103,9 +116,11 @@ class DatabaseServer:
                     
                 elif code == DBSERVER_REQUEST_SECRET:
                     print("DBSERVER_REQUEST_SECRET")
+                    self.requestSecret(sender, datagram)
                     
                 elif code == DBSERVER_SUBMIT_SECRET:
                     print("DBSERVER_SUBMIT_SECRET")
+                    self.submitSecret(sender, datagram)
                     
                 else:
                     raise Exception("Unknown message on DBServer channel: %d" % code)
@@ -622,3 +637,102 @@ class DatabaseServer:
         # Save the database objects to make sure we don't lose our changes.
         self.manager.saveDatabaseObject(friendA)
         self.manager.saveDatabaseObject(friendB)
+        
+    def saveSecretCodes(self):
+        with open(os.path.join(self.databaseDirectory, "friend_access.dat"), "w") as file:
+            json.dump((self.rngSeed, self.secretFriendCodes), file, ensure_ascii=False, sort_keys=True, indent=2)
+            # Close our file, Our data is now written.
+            file.close()
+            
+    def loadSecretCodes(self):
+        with open(os.path.join(self.databaseDirectory, "friend_access.dat"), "w") as file:
+            self.rngSeed, self.secretFriendCodes = json.load(file)
+            file.close()
+		
+    def requestSecret(self, sender, datagram):
+        if not self.rngSeed: self.rngSeed = random.randrange(sys.maxsize)
+        
+        random.seed(self.rngSeed)
+        
+        def id_generator(size=3, chars=string.ascii_lowercase + string.digits):
+            return ''.join(random.Random().choice(chars) for _ in range(size))
+
+        di = DatagramIterator(datagram)
+
+        # The person who wants to get a secret.
+        requesterId = di.getUint32()
+        
+        responseCode = 1
+        if not self.secretFriendCodes.get(requesterId, None):
+            self.secretFriendCodes[requesterId] = []
+
+        if len(self.secretFriendCodes[requesterId]) >= 11:
+            secret = ""
+            responseCode = 0
+        else:
+            secret = "%s %s" % (id_generator(3), id_generator(3))
+            expireDt = datetime.now() + timedelta(hours=48)
+            self.secretFriendCodes[requesterId].append((secret, expireDt.strftime("%Y-%m-%d %H:%M:%S")))
+            # This is a cheeky way to shuffle the seed.
+            # We don't want SF code repeats, So we reseed each time to prevent them.
+            self.rngSeed += requesterId
+            random.seed(self.rngSeed)
+            
+            # Save our new secret codes so we don't need to worry about them.
+            self.saveSecretCodes()
+
+        dg = Datagram()
+        dg.addUint8(responseCode)
+        dg.addString(secret)
+        dg.addUint32(requesterId)
+
+        self.messageDirector.sendMessage([sender], 20100000, DBSERVER_REQUEST_SECRET_RESP, dg)
+        
+    def submitSecret(self, sender, datagram):
+        di = DatagramIterator(datagram)
+
+        # The person who wants to get a secret.
+        requesterId = di.getUint32()
+        
+        # The secret itself.
+        secret = di.getString()
+        
+        responseCode = 0
+        avId = 0
+        sSecret = ""
+        
+        for avId, secrets in dict(self.secretFriendCodes).items():
+            for i in range(0, len(secrets)):
+                sSecret, time = secrets[i]
+                
+                # Compare the secrets. If they don't match, Just move on.
+                if secret != sSecret:
+                    continue
+                
+                dt = datetime.now()
+                expireDt = datetime.strptime(time, "%Y-%m-%d %H:%M:%S")
+                
+                # TODO: Check the friends list of somebody to see
+                # if they are over the limit.
+                
+                # If a secret code is expired, Set our response code.
+                if dt >= expireDt:
+                    responseCode = 0
+                # The requester and creator of the secret match,
+                # We don't accept matching avatar ids for a secret.
+                elif requesterId == avId:
+                    responseCode = 3
+                # Our code is valid, We found the secret and it passed all checks.
+                else:
+                    responseCode = 1
+                    
+                del self.secretFriendCodes[avId][i]
+                break
+            
+        dg = Datagram()
+        dg.addUint8(responseCode)
+        dg.addString(sSecret)
+        dg.addUint32(requesterId)
+        dg.addUint32(avId)
+
+        self.messageDirector.sendMessage([sender], 20100000, DBSERVER_SUBMIT_SECRET_RESP, dg)

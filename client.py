@@ -943,32 +943,25 @@ class Client:
             self.sendMessage(sendId, dg)
 
         elif msgType in (CLIENT_GET_AVATAR_DETAILS, CLIENT_GET_PET_DETAILS):
-            # Client wants to get information on a object.
-            # Object could either be a Pet or another Toon.
             if msgType == CLIENT_GET_AVATAR_DETAILS:
                 # Details about a Toon are being requested.
-                dclassName = 'DistributedToon'
                 sendId = CLIENT_GET_AVATAR_DETAILS_RESP
             elif msgType == CLIENT_GET_PET_DETAILS:
                 # Details about a Pet are being requested.
-                dclassName = 'DistributedPet'
                 sendId = CLIENT_GET_PET_DETAILS_RESP
 
             # The indentifier of the object.
             doId = di.getUint32()
-
-            # Get the dclass object by name.
-            dclass = self.databaseServer.dc.getClassByName(dclassName)
 
             # Make sure the requested object exists.
             if not self.databaseServer.manager.hasDatabaseObject(doId):
                 return
 
             # Grab the fields from the object via the database.
-            fields = self.databaseServer.manager.loadDatabaseObject(doId).fields
+            dbOject = self.databaseServer.manager.loadDatabaseObject(doId)
 
             # Pack our data to go to the client.
-            packedData = self.packDetails(dclass, fields)
+            packedData = self.packDetails(dbOject.dclass, dbOject.fields)
 
             # Prepare the client response.
             dg = Datagram()
