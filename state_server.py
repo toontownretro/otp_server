@@ -309,10 +309,6 @@ class StateServer:
                         do = DistributedObject(doId, dclass, parentId, zoneId)
                         do.senders.append(sender)
                         
-                        #if uberDog and dclass.getName() + "UD" in self.otp.dclassesByName:
-                        #    if uberDog.getPrimaryChannel() not in do.senders:
-                        #        do.senders.append(uberDog.getPrimaryChannel())
-                        
                         # We save the object
                         self.dbObjects[doId] = do
                     else:
@@ -321,15 +317,12 @@ class StateServer:
                         do.parentId = parentId
                         do.zoneId = zoneId
                         do.senders.append(sender)
-                        
-                        #if uberDog and dclass.getName() + "UD" in self.otp.dclassesByName:
-                        #    if uberDog.getPrimaryChannel() not in do.senders:
-                        #        do.senders.append(uberDog.getPrimaryChannel())
                     
                         if do.doId != doId:
                             print("A generate was sent for an incorrect database object!")
                         
                     #print("Generating %s db object %d at (%d, %d)" % (do.dclass.getName(), do.doId, do.parentId, do.zoneId))
+                    #print(do.fields)
                     
                     # We update the object
                     do.receiveRequired(di)
@@ -375,10 +368,6 @@ class StateServer:
                             do = DistributedObject(doId, dclass, parentId, zoneId)
                             do.senders.append(sender)
                             
-                            #if uberDog and dclass.getName() + "UD" in self.otp.dclassesByName:
-                            #    if uberDog.getPrimaryChannel() not in do.senders:
-                            #        do.senders.append(uberDog.getPrimaryChannel())
-                            
                             # We save the object
                             self.objects[doId] = do
                         else:
@@ -386,10 +375,6 @@ class StateServer:
                             do.parentId = parentId
                             do.zoneId = zoneId
                             do.senders.append(sender)
-                            
-                            #if uberDog and dclass.getName() + "UD" in self.otp.dclassesByName:
-                            #    if uberDog.getPrimaryChannel() not in do.senders:
-                            #        do.senders.append(uberDog.getPrimaryChannel())
                         
                         #print("Generating %s object %d at (%d, %d)" % (do.dclass.getName(), do.doId, do.parentId, do.zoneId))
                         
