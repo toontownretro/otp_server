@@ -15,8 +15,8 @@ class MDClient:
         
         self.buffer = bytearray()
         
-        self.connectionName = ""
-        self.connectionURL = ""
+        self.connectionNames = []
+        self.connectionURLs = []
         self.channels = set()
         self.postRemove = []
 
@@ -73,15 +73,15 @@ class MDClient:
                 self.postRemove.append(message)
                 
             elif code == CONTROL_SET_CON_NAME:
-                self.connectionName = di.getString()
+                self.connectionNames.append(di.getString())
                 
             elif code == CONTROL_SET_CON_URL:
-                self.connectionURL = di.getString()
+                self.connectionURLs.append(di.getString())
 
             else:
                 raise NotImplementedError("CONTROL_MESSAGE", code)
             
-            print(self.connectionName, self.connectionURL, self.channels)
+            print(self.connectionNames[0], self.channels)
             
         else:
             sender = di.getUint64()
@@ -99,7 +99,7 @@ class MDClient:
             self.otp.handleMessage(channels, sender, code, Datagram(di.getRemainingBytes()))
             
     def isUberdog(self):
-        return self.connectionName == "UberDog"
+        return self.connectionNames[0] == "UberDog"
         
     def getPrimaryChannel(self):
         return list(self.channels)[0]
