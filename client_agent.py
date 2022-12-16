@@ -21,7 +21,7 @@ class ClientAgent:
         
         # SSL Context
         #context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        #context.load_cert_chain('server.cert', 'server.key')
+        #context.load_cert_chain('secure/server.cert', 'secure/server.key')
 
         # GameServer sock and clients
         self.sock = sock #context.wrap_socket(sock, server_side=True)
