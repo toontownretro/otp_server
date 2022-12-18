@@ -44,11 +44,11 @@ class PyOTP:
         self.readDCFile([otpDC, toonDC])
         
         # "Handlers"
+        self.eventServer = EventServer(self)
         self.messageDirector = MessageDirector(self)
         self.clientAgent = ClientAgent(self)
         self.stateServer = StateServer(self)
         self.databaseServer = DatabaseServer(self)
-        self.eventServer = EventServer(self)
         
         
     def handleMessage(self, channels, sender, code, datagram):

@@ -28,6 +28,9 @@ class EventServer:
         logPath = os.path.join(logDir, "toon_otpserver")
         self.log = RotatingLog.RotatingLog(logPath, hourInterval=24, megabyteLimit=8192)
         
+    def writeToLog(self, str):
+        self.log.write(str)
+        
     def onData(self, data):
         self.onDatagram(Datagram(bytes(data)))
             

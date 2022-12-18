@@ -1,7 +1,8 @@
+import time
 from panda3d.core import Datagram, DatagramIterator
+from central_logger import CentralLogger
 from distributed_object import DistributedObject
 from msgtypes import *
-import time
 
 class StateServer:
     def __init__(self, otp):
@@ -11,9 +12,10 @@ class StateServer:
         # DC File
         self.dc = self.otp.dc
         
-        # Quick access for CA and MD 
+        # Quick access for CA, MD, and ES
         self.clientAgent = self.otp.clientAgent
         self.messageDirector = self.otp.messageDirector
+        self.eventServer = self.otp.eventServer
         
         # Distributed Objects
         self.objects = {}
@@ -28,7 +30,7 @@ class StateServer:
         self.objects[20100000].update("setDateCreated", int(time.time()))
         
         # CentralLogger
-        self.objects[4688] = DistributedObject(4688, self.dc.getClassByName("CentralLogger"), 0, 0)
+        self.objects[4688] = CentralLogger(otp, 4688, self.dc.getClassByName("CentralLogger"), 0, 0)
 
         
     def getInterested(self, do, sender):
@@ -149,13 +151,13 @@ class StateServer:
                     data = di.getRemainingBytes()
                     
                     # We apply the update
-                    if not doId in self.dbObjects:
-                        do = self.objects[doId]
-                    else:
-                        do = self.dbObjects[doId]
-                    
                     field = do.dclass.getFieldByIndex(fieldId)
-                    do.receiveField(field, di)
+                    
+                    # Handle internal CentralLogger specially.
+                    if isinstance(do, CentralLogger):
+                        do.receiveField(sender, field, di)
+                    else:
+                        do.receiveField(field, di)
                     
                     # We transmit the update if it was not sent by the owner
                     channels = self.getInterested(do, sender)
