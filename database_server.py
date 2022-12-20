@@ -301,6 +301,8 @@ class DatabaseServer:
             fieldValues.append(di.getString().encode('ISO-8859-1'))
         
         if not dbObjectType in self.dcObjectTypes:
+            print("ERROR: Failed to create stored object with invalid db object type %d!" % (dbObjectType))
+                        
             dg = Datagram()
             # Add our context.
             dg.addUint32(context)

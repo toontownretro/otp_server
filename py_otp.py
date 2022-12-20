@@ -8,6 +8,7 @@ from state_server import StateServer
 from client_agent import ClientAgent
 from client import Client
 from database_server import DatabaseServer
+from event_server import EventServer
 
 class PyOTP:
     def __init__(self):
@@ -43,6 +44,7 @@ class PyOTP:
         self.readDCFile([otpDC, toonDC])
         
         # "Handlers"
+        self.eventServer = EventServer(self)
         self.messageDirector = MessageDirector(self)
         self.clientAgent = ClientAgent(self)
         self.stateServer = StateServer(self)
@@ -65,7 +67,7 @@ class PyOTP:
         # TODO: use socketserver or something different.
         # We are very limited by select here
         
-        r, w, x = select.select([self.messageDirector.sock, self.clientAgent.sock] + list(self.clients), [], [], 0)
+        r, w, x = select.select([self.messageDirector.sock, self.clientAgent.sock, self.eventServer.sock] + list(self.clients), [], [], 0)
         for sock in r:
             if sock == self.messageDirector.sock:
                 sock, addr = sock.accept()
@@ -76,6 +78,10 @@ class PyOTP:
                 sock, addr = sock.accept()
                 self.clients[sock] = Client(self.clientAgent, sock, addr)
                 self.clientAgent.clients.append(self.clients[sock])
+                
+            elif sock == self.eventServer.sock:
+                data, addr = sock.recvfrom(2048)
+                self.eventServer.onData(data)
                 
             else:
                 client = self.clients[sock]
