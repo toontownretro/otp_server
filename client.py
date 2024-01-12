@@ -260,14 +260,19 @@ class Client:
                 accountDoIdStr = self.databaseServer.manager.backend.getFromAccountServer(userName) if self.databaseServer.manager.backend.inAccountServer(userName) else None
                 if accountDoIdStr:
                     self.account = self.databaseServer.manager.loadDatabaseObject(int(accountDoIdStr))
-                    accountDoId = self.account.doId
+                    if self.account:
+                        accountDoId = self.account.doId
 
-                    # Check if the account has the creation date.
-                    if not self.account.fields.get("CREATED", None):
-                        self.account.update("CREATED", now.strftime("%Y-%m-%d %H:%M:%S"))
-                        
-                    # Update our last login time.
-                    self.account.update("LAST_LOGIN", now.strftime("%Y-%m-%d %H:%M:%S"))
+                        # Check if the account has the creation date.
+                        if not self.account.fields.get("CREATED", None):
+                            self.account.update("CREATED", now.strftime("%Y-%m-%d %H:%M:%S"))
+                            
+                        # Update our last login time.
+                        self.account.update("LAST_LOGIN", now.strftime("%Y-%m-%d %H:%M:%S"))
+                    else:
+                        print("FATAL ERROR: Failed to load account from account database but account is registered in our account server!")
+                        returnCode = 502
+                        responseStr = "Internal Error"
                 else:
                     # Fill out our account fields.
                     fields = {"ACCOUNT_AV_SET": [0, 0, 0, 0, 0, 0,],
@@ -281,8 +286,13 @@ class Client:
 
                     # We create an Account
                     self.account = self.databaseServer.manager.createDatabaseObjectFromName("Account", fields=fields)
-                    accountDoId = self.account.doId
-                    self.databaseServer.manager.backend.addToAccountServer(userName, self.account.doId)
+                    if self.account:
+                        accountDoId = self.account.doId
+                        self.databaseServer.manager.backend.addToAccountServer(userName, self.account.doId)
+                    else:
+                        print("FATAL ERROR: Failed to create account for account database!")
+                        returnCode = 501
+                        responseStr = "Internal Error"
 
                 # Caculate the amount of days since our account was created.
 
@@ -294,9 +304,15 @@ class Client:
 
                 # Get the difference in days, That's how many days our account has been created.
                 accountDays = abs(delta_time.days)
-                 
+            else:
+                print("ERROR: Got ill formated token that passed our checks!")
+                returnCode = 3
+                responseStr = "Internal Error"
+                
+            
             # If no errors occured and we got our account, Then we authorize this client to use the other messages.
             if returnCode == 0 and self.account: self.__authorized = True
+            print(returnCode, self.account, self.__authorized)
 
             datagram = Datagram()
             datagram.addInt8(returnCode) # returnCode
@@ -766,50 +782,52 @@ class Client:
             # Get our hood id from it.
             canonHoodId = canonZoneId - (canonZoneId % 1000)
             
-            if "setDefaultShard" in avatar.fields:
-                # We should probably check this in some way.
-                avatar.fields["setDefaultShard"] = (parentId,)
-                self.handleFieldUpdate(avatar.doId, "setDefaultShard", avatar.fields["setDefaultShard"])
+            # We don't care for dynamic zones, And won't save them.
+            if zoneId != 0 and zoneId < 61000:
+                if "setDefaultShard" in avatar.fields:
+                    # We should probably check this in some way.
+                    avatar.fields["setDefaultShard"] = (parentId,)
+                    self.handleFieldUpdate(avatar.doId, "setDefaultShard", avatar.fields["setDefaultShard"])
 
-            if "setDefaultZone" in avatar.fields and "setLastHood" in avatar.fields:
-                if avatar.fields["setDefaultZone"] != 0: # We don't want Welcome Valley as our last hood.
-                    avatar.fields["setLastHood"] = avatar.fields["setDefaultZone"]
-                    self.handleFieldUpdate(avatar.doId, "setLastHood", avatar.fields["setLastHood"])
+                if "setDefaultZone" in avatar.fields and "setLastHood" in avatar.fields:
+                    if avatar.fields["setDefaultZone"] != 0: # We don't want Welcome Valley as our last hood.
+                        avatar.fields["setLastHood"] = avatar.fields["setDefaultZone"]
+                        self.handleFieldUpdate(avatar.doId, "setLastHood", avatar.fields["setLastHood"])
 
-            if "setDefaultZone" in avatar.fields and not ((zoneId >= 61000) and (zoneId < (1 << 20))):
-                defaultZoneId = zoneId
-                
-                # If we're in Welcome Valley, Then we ignore it's sub zone changes. Including for Goofy Speedway.
-                # Instead our default zone id will be for the Welcome Valley Token.
-                if defaultZoneId >= 22000 and defaultZoneId < 61000:
-                    defaultZoneId = 0 # Set the default zone id to 0, Which is the Welcome Valley zone token.
-                else:
-                    # Get our hood id from it.
-                    defaultZoneId = defaultZoneId - (defaultZoneId % 1000)
-                avatar.fields["setDefaultZone"] = (defaultZoneId,)
-                self.handleFieldUpdate(avatar.doId, "setDefaultZone", avatar.fields["setDefaultZone"])
-                
-            if "setZonesVisited" in avatar.fields and not ((zoneId >= 61000) and (zoneId < (1 << 20))):
-                zonesVisted = avatar.fields["setZonesVisited"][0]
-                
-                # If we haven't visted that zone before and it's not Welcome Valleys Token... We have now!
-                if canonHoodId != 0 and not canonHoodId in zonesVisted:
-                    zonesVisted.append(canonHoodId)
-                    avatar.fields["setZonesVisited"] = (zonesVisted,)
+                if "setDefaultZone" in avatar.fields:
+                    defaultZoneId = zoneId
                     
-                self.handleFieldUpdate(avatar.doId, "setZonesVisited", avatar.fields["setZonesVisited"])
-                
-            if "setHoodsVisited" in avatar.fields and not ((zoneId >= 61000) and (zoneId < (1 << 20))):
-                zonesVisted = avatar.fields["setHoodsVisited"][0]
-                
-                # If we haven't visted that zone before and it's not Welcome Valleys Token... We have now!
-                if canonHoodId != 0 and not canonHoodId in zonesVisted:
-                    zonesVisted.append(canonHoodId)
-                    avatar.fields["setHoodsVisited"] = (zonesVisted,)
-                
-                self.handleFieldUpdate(avatar.doId, "setHoodsVisited", avatar.fields["setHoodsVisited"])
-                
-            self.databaseServer.manager.saveDatabaseObject(avatar)
+                    # If we're in Welcome Valley, Then we ignore it's sub zone changes. Including for Goofy Speedway.
+                    # Instead our default zone id will be for the Welcome Valley Token.
+                    if defaultZoneId >= 22000 and defaultZoneId < 61000:
+                        defaultZoneId = 0 # Set the default zone id to 0, Which is the Welcome Valley zone token.
+                    else:
+                        # Get our hood id from it.
+                        defaultZoneId = defaultZoneId - (defaultZoneId % 1000)
+                    avatar.fields["setDefaultZone"] = (defaultZoneId,)
+                    self.handleFieldUpdate(avatar.doId, "setDefaultZone", avatar.fields["setDefaultZone"])
+                    
+                if "setZonesVisited" in avatar.fields:
+                    zonesVisted = avatar.fields["setZonesVisited"][0]
+                    
+                    # If we haven't visted that zone before and it's not Welcome Valleys Token... We have now!
+                    if canonHoodId != 0 and not canonHoodId in zonesVisted:
+                        zonesVisted.append(canonHoodId)
+                        avatar.fields["setZonesVisited"] = (zonesVisted,)
+                        
+                    self.handleFieldUpdate(avatar.doId, "setZonesVisited", avatar.fields["setZonesVisited"])
+                    
+                if "setHoodsVisited" in avatar.fields:
+                    zonesVisted = avatar.fields["setHoodsVisited"][0]
+                    
+                    # If we haven't visted that zone before and it's not Welcome Valleys Token... We have now!
+                    if canonHoodId != 0 and not canonHoodId in zonesVisted:
+                        zonesVisted.append(canonHoodId)
+                        avatar.fields["setHoodsVisited"] = (zonesVisted,)
+                    
+                    self.handleFieldUpdate(avatar.doId, "setHoodsVisited", avatar.fields["setHoodsVisited"])
+                    
+                self.databaseServer.manager.saveDatabaseObject(avatar)
                 
             # We tell the StateServer that we're moving an object.
             dg = Datagram()
@@ -1156,7 +1174,9 @@ class Client:
         if userName:
             # Set the required response info.
             response["userName"] = userName
-        
+        else:
+            response["userName"] = account_name
+            
         # Get our SWID from the play token.
         swid = variables.get("SWID", None)
         # If we got our SWID, Set it in our response.
