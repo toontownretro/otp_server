@@ -1,6 +1,7 @@
 __pycache__
 *.py[co]
 database/*
+databases/*
 .idea
 .vs
 .history
