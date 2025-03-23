@@ -1,7 +1,7 @@
-import os, socket, select
-
 from panda3d.core import DSearchPath, Filename, VirtualFileSystem
 from panda3d.direct import DCFile
+
+import os, socket, select
 
 from message_director import MessageDirector, MDClient
 from state_server import StateServer

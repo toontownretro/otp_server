@@ -1,5 +1,4 @@
 import base64, hashlib, os, threading, traceback, uuid
-
 from datetime import datetime
 
 dbmType = "gnu"
@@ -27,7 +26,6 @@ from panda3d.direct import DCPacker
 
 from database_object import DatabaseObject
 from distributed_object import DistributedObject
-from msgtypes import *
 
 class DatabaseBackend:
     def __init__(self, manager):
@@ -385,7 +383,7 @@ class DatabaseBackendMySQL(DatabaseBackend):
         self.passwd = ConfigVariableString("mysql-passwd", "").getValue()
         self.db = None
         
-        # Get our language for any language specifc database, Then get the name.
+        # Get our language for any language specific database, Then get the name.
         language = ConfigVariableString("language", "english").getValue()
         self.dbName = "toontownTopDb"
         if language == 'castillian':
@@ -919,7 +917,7 @@ class DatabaseBackendMySQL(DatabaseBackend):
             res = cursor.fetchall()
             
             if not res: return 10000000 # If we got no result, There is no objects.
-            return 10000000 + len(res) # Add the nujmber of objects to the base id.
+            return 10000000 + len(res) # Add the number of objects to the base id.
         except MySQLdb.OperationalError as e:
             pass
         except Exception as e:
@@ -973,7 +971,7 @@ class DatabaseManager:
         # Get the next available doId.
         doId = self.backend.getNextDoId()
 
-        # Generate a unique indentifier for the database object.
+        # Generate a unique identifier for the database object.
         m = hashlib.md5()
         m.update(("%s-%d-%s" % (str(dclass.getName()), doId, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))).encode('utf-8'))
 

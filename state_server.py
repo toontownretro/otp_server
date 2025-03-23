@@ -1,8 +1,11 @@
-import time
 from panda3d.core import Datagram, DatagramIterator
-from central_logger import CentralLogger
 from distributed_object import DistributedObject
-from msgtypes import *
+
+from otp.ai.AIMsgTypes import AIMsgName2Id
+
+from central_logger import CentralLogger
+
+import time
 
 class StateServer:
     def __init__(self, otp):
@@ -95,7 +98,7 @@ class StateServer:
         # Otherwise the deleted object channel in question will not be cleaned up.
         channels.append(sender)
         if channels:
-            self.messageDirector.sendMessage(channels, sender, STATESERVER_OBJECT_DELETE_RAM, dg)
+            self.messageDirector.sendMessage(channels, sender, AIMsgName2Id["STATESERVER_OBJECT_DELETE_RAM"], dg)
         
         # We announce to game clients too (through ClientAgent)
         self.clientAgent.announceDelete(do, sender)
@@ -121,7 +124,7 @@ class StateServer:
                     print("Datagram unexpectedly ended short!")
                     return
                 
-                if code == STATESERVER_QUERY_OBJECT_ALL:
+                if code == AIMsgName2Id["STATESERVER_QUERY_OBJECT_ALL"]:
                     # Someone is asking info about us
                     context = di.getUint32()
                     
@@ -135,10 +138,10 @@ class StateServer:
                     do.packRequired(dg)
                     do.packOther(dg) # TODO Should we check for airecv?
                     
-                    self.messageDirector.sendMessage([sender], 20100000, STATESERVER_QUERY_OBJECT_ALL_RESP, dg)
+                    self.messageDirector.sendMessage([sender], 20100000, AIMsgName2Id["STATESERVER_QUERY_OBJECT_ALL_RESP"], dg)
                     
                     
-                elif code == STATESERVER_OBJECT_UPDATE_FIELD:
+                elif code == AIMsgName2Id["STATESERVER_OBJECT_UPDATE_FIELD"]:
                     # We are asked to update a field
                     doId = di.getUint32()
                     fieldId = di.getUint16()
@@ -189,13 +192,13 @@ class StateServer:
                         dg.addUint16(fieldId)
                         dg.appendData(data)
                         
-                        self.messageDirector.sendMessage(channels, sender, STATESERVER_OBJECT_UPDATE_FIELD, dg)
+                        self.messageDirector.sendMessage(channels, sender, AIMsgName2Id["STATESERVER_OBJECT_UPDATE_FIELD"], dg)
                         
                     # We announce to clients too (cause we're a ClientAgent)
                     self.clientAgent.announceUpdate(do, field, data, sender)
                     
                         
-                elif code == STATESERVER_OBJECT_DELETE_RAM:
+                elif code == AIMsgName2Id["STATESERVER_OBJECT_DELETE_RAM"]:
                     # We are asked to delete an object.
                     
                     # This packet can be sent to the StateServer (20100000)
@@ -206,7 +209,7 @@ class StateServer:
                     
                     doId = di.getUint32()
                     if do.doId == doId:
-                        # This is very likely a uninitalized DB object.
+                        # This is very likely a uninitialized DB object.
                         # We don't want to delete these yet as they are used
                         # for a generate in the future.
                         if do.zoneId == 0 and do.parentId == 0:
@@ -219,7 +222,7 @@ class StateServer:
                         # which means the state server handles the deletion of the object
                         if doId in self.objects:
                             do = self.objects[doId]
-                            # This is very likely a uninitalized DB object.
+                            # This is very likely a uninitialized DB object.
                             # We don't want to delete these yet as they are used
                             # for a generate in the future.
                             if do.zoneId == 0 and do.parentId == 0:
@@ -227,7 +230,7 @@ class StateServer:
                             self.deleteObject(do, 20100000)
                         elif doId in self.dbObjects:
                             do = self.dbObjects[doId]
-                            # This is very likely a uninitalized DB object.
+                            # This is very likely a uninitialized DB object.
                             # We don't want to delete these yet as they are used
                             # for a generate in the future.
                             if do.zoneId == 0 and do.parentId == 0:
@@ -237,12 +240,12 @@ class StateServer:
                             # We answer it was not found
                             dg = Datagram()
                             dg.addUint32(doId)
-                            self.messageDirector.sendMessage([sender], 20100000, STATESERVER_OBJECT_NOTFOUND, dg)
+                            self.messageDirector.sendMessage([sender], 20100000, AIMsgName2Id["STATESERVER_OBJECT_NOTFOUND"], dg)
                     else:
                         raise Exception("Received invalid delete object message (channel %d doId %d)" % (channel, doId))
                         
                         
-                elif code == STATESERVER_OBJECT_SET_ZONE:
+                elif code == AIMsgName2Id["STATESERVER_OBJECT_SET_ZONE"]:
                     # We are asked to move an object.
                     parentId = di.getUint32()
                     zoneId = di.getUint32()
@@ -268,7 +271,7 @@ class StateServer:
                                 dg.addUint32(prevParentId)
                                 dg.addUint32(prevZoneId)
                                 
-                                self.messageDirector.sendMessage(channels, sender, STATESERVER_OBJECT_CHANGE_ZONE, dg)
+                                self.messageDirector.sendMessage(channels, sender, AIMsgName2Id["STATESERVER_OBJECT_CHANGE_ZONE"], dg)
                             
                         else:
                             # Parent id changed: we must remove it and add it back
@@ -276,7 +279,7 @@ class StateServer:
                                 dg = Datagram()
                                 dg.addUint32(do.doId)
                                 
-                                self.messageDirector.sendMessage([prevParentChannel], sender, STATESERVER_OBJECT_LEAVING_AI_INTEREST, dg)
+                                self.messageDirector.sendMessage([prevParentChannel], sender, AIMsgName2Id["STATESERVER_OBJECT_LEAVING_AI_INTEREST"], dg)
                             
                             channels = self.getInterested(do, sender)
                             if channels:
@@ -288,12 +291,12 @@ class StateServer:
                                 do.packRequired(dg)
                                 do.packOther(dg) # TODO Should we check for airecv?
                                 
-                                self.messageDirector.sendMessage(channels, sender, STATESERVER_OBJECT_ENTERZONE_WITH_REQUIRED_OTHER, dg)
+                                self.messageDirector.sendMessage(channels, sender, AIMsgName2Id["STATESERVER_OBJECT_ENTERZONE_WITH_REQUIRED_OTHER"], dg)
                     
                     # We announce to clients too (cause we're a ClientAgent)
                     self.clientAgent.announceMove(do, prevParentId, prevZoneId, sender)
                     
-                elif channel != 20100000 and code in (STATESERVER_OBJECT_GENERATE_WITH_REQUIRED, STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER):
+                elif channel != 20100000 and code in (AIMsgName2Id["STATESERVER_OBJECT_GENERATE_WITH_REQUIRED"], AIMsgName2Id["STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER"]):
                     # We are asked to create an object
                     parentId = di.getUint32()
                     zoneId = di.getUint32()
@@ -328,7 +331,7 @@ class StateServer:
                     
                     # We update the object
                     do.receiveRequired(di)
-                    if code == STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER:
+                    if code == AIMsgName2Id["STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER"]:
                         do.receiveOther(di)
                         
                     # We announce the object was created if it was not created by the owner.
@@ -343,7 +346,7 @@ class StateServer:
                         do.packRequired(dg)
                         do.packOther(dg) # TODO Should we check for airecv?
                         
-                        self.messageDirector.sendMessage(channels, sender, STATESERVER_OBJECT_ENTERZONE_WITH_REQUIRED_OTHER, dg)
+                        self.messageDirector.sendMessage(channels, sender, AIMsgName2Id["STATESERVER_OBJECT_ENTERZONE_WITH_REQUIRED_OTHER"], dg)
                         
                     # We announce to clients too (cause we're a ClientAgent)
                     #print("Announcing Create for Database Object %d with sender %d!" % (do.doId, sender))
@@ -352,7 +355,7 @@ class StateServer:
                 elif channel == 20100000:
                     # Now we're in the case it was sent to the state server
                     
-                    if code in (STATESERVER_OBJECT_GENERATE_WITH_REQUIRED, STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER):
+                    if code in (AIMsgName2Id["STATESERVER_OBJECT_GENERATE_WITH_REQUIRED"], AIMsgName2Id["STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER"]):
                         # We are asked to create an object
                         parentId = di.getUint32()
                         zoneId = di.getUint32()
@@ -382,7 +385,7 @@ class StateServer:
                         
                         # We update the object
                         do.receiveRequired(di)
-                        if code == STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER:
+                        if code == AIMsgName2Id["STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER"]:
                             do.receiveOther(di)
                             
                         # We announce the object was created if it was not created by the owner.
@@ -397,13 +400,13 @@ class StateServer:
                             do.packRequired(dg)
                             do.packOther(dg) # TODO Should we check for airecv?
                             
-                            self.messageDirector.sendMessage(channels, sender, STATESERVER_OBJECT_ENTERZONE_WITH_REQUIRED_OTHER, dg)
+                            self.messageDirector.sendMessage(channels, sender, AIMsgName2Id["STATESERVER_OBJECT_ENTERZONE_WITH_REQUIRED_OTHER"], dg)
                             
                         # We announce to clients too (cause we're a ClientAgent)
                         #print("Announcing Create for Object %d with sender %d!" % (do.doId, sender))
                         self.clientAgent.announceCreate(do, sender)
                         
-                    elif code == STATESERVER_SHARD_REST:
+                    elif code == AIMsgName2Id["STATESERVER_SHARD_REST"]:
                         # Shard is going down.
                         # We gotta delete its objects.
                         shardId = di.getUint64()

@@ -1,10 +1,7 @@
-import os, socket, struct
-
 from panda3d.core import Datagram, DatagramIterator, Filename
-
 from direct.directnotify import RotatingLog
 
-from msgtypes import *
+import os, socket, struct
 
 class EventServer:
     def __init__(self, otp):

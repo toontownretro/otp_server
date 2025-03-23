@@ -22,7 +22,7 @@ def des3_cbc_encrypt(plaintext, password):
     plaintextPadding = pad(plaintext, DES3.block_size)
     ciphertext = cipher.encrypt(plaintextPadding)
 
-    # Make our ciphertext compataible with the OpenSSL executable. (For testing purposes)
+    # Make our ciphertext compatible with the OpenSSL executable. (For testing purposes)
     ciphertext = base64.b64encode(b"Salted__" + salt + ciphertext)
     return ciphertext
     

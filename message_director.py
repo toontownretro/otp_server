@@ -1,5 +1,6 @@
 from panda3d.core import Datagram, DatagramIterator
-from msgtypes import *
+
+from otp.ai import AIMsgTypes
 
 import socket
 import struct
@@ -57,25 +58,25 @@ class MDClient:
             channel = di.getUint64()
             channels.append(channel)
         
-        if count == 1 and channel == CONTROL_MESSAGE:
+        if count == 1 and channel == AIMsgTypes.CONTROL_MESSAGE:
             code = di.getUint16()
             
-            if code == CONTROL_SET_CHANNEL:
+            if code == AIMsgTypes.CONTROL_SET_CHANNEL:
                 channel = di.getUint64()
                 self.channels.add(channel)
                 
-            elif code == CONTROL_REMOVE_CHANNEL:
+            elif code == AIMsgTypes.CONTROL_REMOVE_CHANNEL:
                 channel = di.getUint64()
                 self.channels.remove(channel)
                 
-            elif code == CONTROL_ADD_POST_REMOVE:
+            elif code == AIMsgTypes.CONTROL_ADD_POST_REMOVE:
                 message = di.getBlob()
                 self.postRemove.append(message)
                 
-            elif code == CONTROL_SET_CON_NAME:
+            elif code == AIMsgTypes.CONTROL_SET_CON_NAME:
                 self.connectionNames.append(di.getString())
                 
-            elif code == CONTROL_SET_CON_URL:
+            elif code == AIMsgTypes.CONTROL_SET_CON_URL:
                 self.connectionURLs.append(di.getString())
 
             else:

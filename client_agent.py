@@ -1,6 +1,10 @@
-from panda3d.core import Datagram, DatagramIterator, Filename
+from panda3d.core import Datagram, DatagramIterator, Filename, ConfigVariableString
+from direct.distributed.MsgTypes import MsgName2Id
+
+from otp.ai.AIMsgTypes import AIMsgName2Id
+
 from dnaparser import loadDNAFile, DNAStorage
-from msgtypes import *
+
 import socket
 import time
 import ssl
@@ -33,35 +37,30 @@ class ClientAgent:
             "cog_hq_lawbot_sz.dna",
             "cog_hq_sellbot_11200.dna",
             "cog_hq_sellbot_sz.dna",
-            "daisys_garden_5100.dna",
-            "daisys_garden_5200.dna",
-            "daisys_garden_5300.dna",
-            #"daisys_garden_sz.dna",
-            "donalds_dock_1100.dna",
-            "donalds_dock_1200.dna",
-            "donalds_dock_1300.dna",
-            #"donalds_dock_sz.dna",
-            "donalds_dreamland_9100.dna",
-            "donalds_dreamland_9200.dna",
-            #"donalds_dreamland_sz.dna",
-            #"estate_1.dna",
-            #"golf_zone_sz.dna",
-            #"goofy_speedway_sz.dna",
-            "minnies_melody_land_4100.dna",
-            "minnies_melody_land_4200.dna",
-            "minnies_melody_land_4300.dna",
-            #"minnies_melody_land_sz.dna",
-            #"outdoor_zone_sz.dna",
-            #"party_sz.dna",
-            "the_burrrgh_3100.dna",
-            "the_burrrgh_3200.dna",
-            "the_burrrgh_3300.dna",
-            #"the_burrrgh_sz.dna",
-            "toontown_central_2100.dna",
-            "toontown_central_2200.dna",
-            "toontown_central_2300.dna",
-            #"toontown_central_sz.dna",
-            #"tutorial_street.dna"
+            
+            # For now just use English
+            "donalds_dock_1100_english.dna",
+            "donalds_dock_1200_english.dna",
+            "donalds_dock_1300_english.dna",
+            
+            "toontown_central_2100_english.dna",
+            "toontown_central_2200_english.dna",
+            "toontown_central_2300_english.dna",
+            
+            "the_burrrgh_3100_english.dna",
+            "the_burrrgh_3200_english.dna",
+            "the_burrrgh_3300_english.dna",
+            
+            "minnies_melody_land_4100_english.dna",
+            "minnies_melody_land_4200_english.dna",
+            "minnies_melody_land_4300_english.dna",
+            
+            "daisys_garden_5100_english.dna",
+            "daisys_garden_5200_english.dna",
+            "daisys_garden_5300_english.dna",
+            
+            "donalds_dreamland_9100_english.dna",
+            "donalds_dreamland_9200_english.dna",
         ]
         
         # We cache the visgroups
@@ -69,14 +68,34 @@ class ClientAgent:
         dnaStore = DNAStorage()
         
         for filename in dnaFiles:
-            loadDNAFile(dnaStore, Filename("dna", filename))
+            # This might be problematic for prebuilt
+            # maybe use built instead?
+            loadDNAFile(dnaStore, Filename("../ttmodels/src/dna", filename))
             
         for visgroup in dnaStore.visGroups:
             self.visgroups[int(visgroup.name)] = [int(i) for i in visgroup.visibles]
             
         # We read the NameMaster
         self.nameDictionary = {}
-        with open("../toontown/src/configfiles/NameMasterEnglish.txt", "r") as file:
+        # Check which language should be used, defaults to English
+        # Perhaps look for product code instead of language?
+        language = ConfigVariableString("language", "english").getValue()
+        self.NameMaster = "../toontown/src/configfiles/NameMasterEnglish.txt"
+        if language == 'castillian':
+            self.NameMaster = "../toontown/src/configfiles/NameMaster_castillian.txt"
+        elif language == "japanese":
+            self.NameMaster = "../toontown/src/configfiles/NameMaster_japanese.txt"
+        elif language == "german":
+            self.NameMaster = "../toontown/src/configfiles/NameMaster_german.txt"
+        elif language == "french":
+            self.NameMaster = "../toontown/src/configfiles/NameMaster_french.txt"
+        elif language == "portuguese":
+            self.NameMaster = "../toontown/src/configfiles/NameMaster_portuguese.txt"
+        else:
+            # Unknown language
+            self.NameMaster = "../toontown/src/configfiles/NameMasterEnglish.txt"
+
+        with open(self.NameMaster, "r") as file:
             for line in file:
                 if line.startswith("#"):
                     continue
@@ -105,7 +124,7 @@ class ClientAgent:
                 
             # We send the object creation if we're the owner or if we're interested.
             if client.hasInterest(do.parentId, do.zoneId) or do.doId == client.avatarId:
-                client.sendMessage(CLIENT_CREATE_OBJECT_REQUIRED_OTHER, dg)
+                client.sendMessage(MsgName2Id["CLIENT_CREATE_OBJECT_REQUIRED_OTHER"], dg)
         
         
     def announceDelete(self, do, sender):
@@ -125,7 +144,7 @@ class ClientAgent:
             # We tell the client that it's disabled only if they're interested or the owner.
             # (Please note this last condition here is useless but it's meant to be replaced if owner view is implemented some day)
             elif client.hasInterest(do.parentId, do.zoneId) or do.doId == client.avatarId:
-                client.sendMessage(CLIENT_OBJECT_DISABLE, dg)
+                client.sendMessage(MsgName2Id["CLIENT_OBJECT_DISABLE"], dg)
         
         
     def announceMove(self, do, prevParentId, prevZoneId, sender):
@@ -159,22 +178,22 @@ class ClientAgent:
                 
             # If we're the owner, we must receive it in any case
             if client.avatarId == do.doId:
-                client.sendMessage(CLIENT_OBJECT_LOCATION, dg2)
+                client.sendMessage(MsgName2Id["CLIENT_OBJECT_LOCATION"], dg2)
                 
             # If we're interested in the previous area
             elif client.hasInterest(prevParentId, prevZoneId):
                 # If we're interested in the new area,
                 # we can just tell the client that the object moved
                 if client.hasInterest(do.parentId, do.zoneId):
-                    client.sendMessage(CLIENT_OBJECT_LOCATION, dg2)
+                    client.sendMessage(MsgName2Id["CLIENT_OBJECT_LOCATION"], dg2)
                 else:   
                     # If we're not, we ask them to disable the object
-                    client.sendMessage(CLIENT_OBJECT_DISABLE, dg1)
+                    client.sendMessage(MsgName2Id["CLIENT_OBJECT_DISABLE"], dg1)
                     
             # If we're only interested in the new area,
             # we ask them to create the object
             elif client.hasInterest(do.parentId, do.zoneId):
-                client.sendMessage(CLIENT_CREATE_OBJECT_REQUIRED_OTHER, dg3)
+                client.sendMessage(MsgName2Id["CLIENT_CREATE_OBJECT_REQUIRED_OTHER"], dg3)
                 
                 
     def announceUpdate(self, do, field, data, sender):
@@ -203,7 +222,7 @@ class ClientAgent:
                 
             # If we're interested OR owner, we send the update
             if client.hasInterest(do.parentId, do.zoneId) or client.avatarId == do.doId:
-                client.sendMessage(CLIENT_OBJECT_UPDATE_FIELD, dg)
+                client.sendMessage(MsgName2Id["CLIENT_OBJECT_UPDATE_FIELD"], dg)
                 
         
     def handle(self, channels, sender, code, datagram):
@@ -216,10 +235,10 @@ class ClientAgent:
                     continue
                     
                 if channel == client.avatarId + (1 << 32):
-                    if code == STATESERVER_OBJECT_UPDATE_FIELD:
-                        client.sendMessage(CLIENT_OBJECT_UPDATE_FIELD, datagram)
-                    elif code == CLIENT_SET_FIELD_SENDABLE:
-                        print("Recieved messsage type CLIENT_SET_FIELD_SENDABLE.")
+                    if code == AIMsgName2Id["STATESERVER_OBJECT_UPDATE_FIELD"]:
+                        client.sendMessage(MsgName2Id["CLIENT_OBJECT_UPDATE_FIELD"], datagram)
+                    elif code == MsgName2Id["CLIENT_SET_FIELD_SENDABLE"]:
+                        print("Received message type CLIENT_SET_FIELD_SENDABLE.")
                         
                         dgi = DatagramIterator(datagram)
                         

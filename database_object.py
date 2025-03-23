@@ -1,5 +1,6 @@
-import uuid
 from panda3d.direct import DCPacker
+
+import uuid
 from pprint import pformat
 
 class DatabaseObject:

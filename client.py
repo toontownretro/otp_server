@@ -1,10 +1,15 @@
+from panda3d.core import Datagram, DatagramIterator
+from panda3d.direct import DCPacker
+# Is there no better way to do this without import *?
+from direct.distributed import MsgTypes
+from direct.distributed.MsgTypes import MsgName2Id
+
+from otp.ai.AIMsgTypes import AIMsgName2Id
+from toontown.hood.ZoneUtil import getCanonicalZoneId, getTrueZoneId
+
 import math, os, struct, time, pytz, traceback
 from datetime import datetime, timezone
 
-from panda3d.core import Datagram, DatagramIterator
-from panda3d.direct import DCPacker
-from zone_util import getCanonicalZoneId, getTrueZoneId
-from msgtypes import *
 from security import *
 
 class Client:
@@ -47,7 +52,7 @@ class Client:
             datagram.addString(reason)
             
         # Tell our connected client to go get lost.
-        self.sendMessage(CLIENT_GO_GET_LOST, datagram)
+        self.sendMessage(MsgName2Id["CLIENT_GO_GET_LOST"], datagram)
         
         # We are no longer authorized.
         self.__authorized = False
@@ -97,19 +102,19 @@ class Client:
             self.disconnect(200) # Internal error in the clients state machine.  Contact Developers for correction.
             
         # If it's a heartbeat, Respond directly. Otherwise handle our datagram.
-        if msgType == CLIENT_HEARTBEAT:
+        if msgType == MsgName2Id["CLIENT_HEARTBEAT"]:
             # TODO: Keep track of heartbeats.
-            self.sendMessage(CLIENT_HEARTBEAT, msgDg)
+            self.sendMessage(MsgName2Id["CLIENT_HEARTBEAT"], msgDg)
         else:
             # Handle the datagram.
             self.handle_datagram(msgType, di)
             
     def handle_datagram(self, msgType, di):
-        if msgType == CLIENT_DISCONNECT:
+        if msgType == MsgName2Id["CLIENT_DISCONNECT"]:
             # Luckily for us, Super simple.
             self.disconnect()
             
-        elif msgType == CLIENT_LOGIN_2:
+        elif msgType == MsgName2Id["CLIENT_LOGIN_2"]:
             print("CLIENT_LOGIN_2")
             playToken = di.getString()
             serverVersion = di.getString()
@@ -176,18 +181,18 @@ class Client:
                     accountDoId = self.account.doId
                     self.databaseServer.manager.backend.addToAccountServer(userName, self.account.doId)
                     
-                # Caculate the amount of days since our account was created.
+                # Calculate the amount of days since our account was created.
                  
                 # Get our creation time from the stored date string.
                 creation_time = datetime.strptime(self.account.fields.get("CREATED", now.strftime("%Y-%m-%d %H:%M:%S")), "%Y-%m-%d %H:%M:%S")
                  
-                # Caculate the difference in dates.
+                # Calculate the difference in dates.
                 delta_time = now - creation_time
                  
                 # Get the difference in days, That's how many days our account has been created.
                 accountDays = abs(delta_time.days)
                  
-            # If no errors occured and we got our account, Then we authorize this client to use the other messages.
+            # If no errors occurred and we got our account, Then we authorize this client to use the other messages.
             if returnCode == 0 and self.account: self.__authorized = True
 
             datagram = Datagram()
@@ -207,9 +212,9 @@ class Client:
             datagram.addString(whiteListChat) # whiteListChatEnabled
             datagram.addInt32(accountDays) # accountDays
             datagram.addString(now.strftime("%Y-%m-%d %H:%M:%S")) # lastLoggedInStr
-            self.sendMessage(CLIENT_LOGIN_2_RESP, datagram)
+            self.sendMessage(MsgName2Id["CLIENT_LOGIN_2_RESP"], datagram)
 
-        elif msgType == CLIENT_LOGIN_TOONTOWN:
+        elif msgType == MsgName2Id["CLIENT_LOGIN_TOONTOWN"]:
             print("CLIENT_LOGIN_TOONTOWN")
             playToken = di.getString()
             serverVersion = di.getString()
@@ -294,18 +299,18 @@ class Client:
                         returnCode = 501
                         responseStr = "Internal Error"
 
-                # Caculate the amount of days since our account was created.
+                # Calculate the amount of days since our account was created.
 
                 # Get our creation time from the stored date string.
                 creation_time = datetime.strptime(self.account.fields.get("CREATED", now.strftime("%Y-%m-%d %H:%M:%S")), "%Y-%m-%d %H:%M:%S")
 
-                # Caculate the difference in dates.
+                # Calculate the difference in dates.
                 delta_time = now - creation_time
 
                 # Get the difference in days, That's how many days our account has been created.
                 accountDays = abs(delta_time.days)
             else:
-                print("ERROR: Got ill formated token that passed our checks!")
+                print("ERROR: Got ill formatted token that passed our checks!")
                 returnCode = 3
                 responseStr = "Internal Error"
                 
@@ -334,18 +339,18 @@ class Client:
             datagram.addInt32(accountDays) # accountDays
             datagram.addString("NO_PARENT_ACCOUNT")
             datagram.addString(userName) # userName - not saved in our db so we're just putting a placeholder
-            self.sendMessage(CLIENT_LOGIN_TOONTOWN_RESP, datagram)
+            self.sendMessage(MsgName2Id["CLIENT_LOGIN_TOONTOWN_RESP"], datagram)
 
         elif self.__authorized:
             self.handle_authenticated_datagram(msgType, di)
 
         else:
-            print("Received unexpected/unknown messagetype %d from connection: %s:%d!" % (msgType, self.addr[0], self.addr[1]))
+            print("Received unexpected/unknown msgType %d from connection: %s:%d!" % (msgType, self.addr[0], self.addr[1]))
             self.disconnect(220) # Internal error in the client state machine. Contact developers for correction.
         
         
     def handle_authenticated_datagram(self, msgType, di):
-        if msgType == CLIENT_CREATE_AVATAR:
+        if msgType == MsgName2Id["CLIENT_CREATE_AVATAR"]:
             # Client wants to create an avatar
 
             # We read av info
@@ -377,9 +382,9 @@ class Client:
             # So just leave it as a specialized internal dev one..
             fields["setAccountName"] = "internal_%s" % str(hex(self.account.doId))
             
-            # DISL likely stood for Disney Internal Server Login. 
+            # DISL is an acronym for Disney Integrated Services Layer.
             # This server must of had it's own set of accounts which included names
-            # and ids seperate from the OTP Server. 
+            # and ids separate from the OTP Server. 
             # Since we have no such server, The fields are unused for us.
             
             # The DISL Name is the name of the Disney XD Account (Global Account).
@@ -408,10 +413,10 @@ class Client:
             datagram.addUint16(contextId)
             datagram.addUint8(0) # returnCode
             datagram.addUint32(avatar.doId)
-            self.sendMessage(CLIENT_CREATE_AVATAR_RESP, datagram)
+            self.sendMessage(MsgName2Id["CLIENT_CREATE_AVATAR_RESP"], datagram)
 
 
-        elif msgType == CLIENT_SET_NAME_PATTERN:
+        elif msgType == MsgName2Id["CLIENT_SET_NAME_PATTERN"]:
             # Client sets his name
             # We may only allow this if we don't already have a name,
             # or only have a default name.
@@ -465,10 +470,10 @@ class Client:
             datagram = Datagram()
             datagram.addUint32(avatar.doId)
             datagram.addUint8(0)
-            self.sendMessage(CLIENT_SET_NAME_PATTERN_ANSWER, datagram)
+            self.sendMessage(MsgName2Id["CLIENT_SET_NAME_PATTERN_ANSWER"], datagram)
 
 
-        elif msgType == CLIENT_SET_WISHNAME:
+        elif msgType == MsgName2Id["CLIENT_SET_WISHNAME"]:
             # Client sets his name
             # We may only allow this if we don't already have a name,
             # or only have a default name.
@@ -494,7 +499,7 @@ class Client:
                 datagram.addString(name)
                 datagram.addString("")
 
-                self.sendMessage(CLIENT_SET_WISHNAME_RESP, datagram)
+                self.sendMessage(MsgName2Id["CLIENT_SET_WISHNAME_RESP"], datagram)
                 return
 
             # Make sure the requested object exists.
@@ -513,10 +518,10 @@ class Client:
             datagram.addString(name)
             datagram.addString("")
 
-            self.sendMessage(CLIENT_SET_WISHNAME_RESP, datagram)
+            self.sendMessage(MsgName2Id["CLIENT_SET_WISHNAME_RESP"], datagram)
 
 
-        elif msgType == CLIENT_DELETE_AVATAR:
+        elif msgType == MsgName2Id["CLIENT_DELETE_AVATAR"]:
             # Client wants to delete one of his avatars.
             # That's sad but let it be.
             avId = di.getUint32()
@@ -524,7 +529,7 @@ class Client:
             # Is that even our avatar?
             accountAvSet = self.account.fields["ACCOUNT_AV_SET"]
             if not avId in accountAvSet:
-                raise Exception("Client tries to delete an avatar it doesnt own!")
+                raise Exception("Client tries to delete an avatar it doesn't own!")
 
             # We remove the avatar
             accountAvSet[accountAvSet.index(avId)] = 0
@@ -534,9 +539,9 @@ class Client:
             datagram = Datagram()
             datagram.addUint8(0)
             self.writeAvatarList(datagram)
-            self.sendMessage(CLIENT_DELETE_AVATAR_RESP, datagram)
+            self.sendMessage(MsgName2Id["CLIENT_DELETE_AVATAR_RESP"], datagram)
 
-        elif msgType == CLIENT_ADD_INTEREST:
+        elif msgType == MsgName2Id["CLIENT_ADD_INTEREST"]:
             # Client wants to add or replace an interest
             handle = di.getUint16()
             contextId = di.getUint32()
@@ -592,7 +597,7 @@ class Client:
                         if do.parentId == parentId and do.zoneId in oldZones and not (do.zoneId in zones or self.hasInterest(do.parentId, do.zoneId)):
                             dg = Datagram()
                             dg.addUint32(do.doId)
-                            self.sendMessage(CLIENT_OBJECT_DISABLE, dg)
+                            self.sendMessage(MsgName2Id["CLIENT_OBJECT_DISABLE"], dg)
 
                     for do in self.stateServer.dbObjects.values():
                         # If the object is not visible anymore, we disable it
@@ -600,7 +605,7 @@ class Client:
                         if do.parentId == parentId and do.zoneId in oldZones and not (do.zoneId in zones or self.hasInterest(do.parentId, do.zoneId)):
                             dg = Datagram()
                             dg.addUint32(do.doId)
-                            self.sendMessage(CLIENT_OBJECT_DISABLE, dg)
+                            self.sendMessage(MsgName2Id["CLIENT_OBJECT_DISABLE"], dg)
 
                 else:
                     # We only check if we're no longer interested in
@@ -608,14 +613,14 @@ class Client:
                         if do.parentId == oldParentId and do.zoneId in oldZones and not self.hasInterest(do.parentId, do.zoneId):
                             dg = Datagram()
                             dg.addUint32(do.doId)
-                            self.sendMessage(CLIENT_OBJECT_DISABLE, dg)
+                            self.sendMessage(MsgName2Id["CLIENT_OBJECT_DISABLE"], dg)
 
                     # We only check if we're no longer interested in
                     for do in self.stateServer.dbObjects.values():
                         if do.parentId == oldParentId and do.zoneId in oldZones and not self.hasInterest(do.parentId, do.zoneId):
                             dg = Datagram()
                             dg.addUint32(do.doId)
-                            self.sendMessage(CLIENT_OBJECT_DISABLE, dg)
+                            self.sendMessage(MsgName2Id["CLIENT_OBJECT_DISABLE"], dg)
 
                     # We set oldZones to an empty tuple
                     # (because we're ignoring them as parentId is difference)
@@ -638,17 +643,17 @@ class Client:
             dg = Datagram()
             dg.addUint16(handle)
             dg.addUint32(contextId)
-            self.sendMessage(CLIENT_DONE_INTEREST_RESP, dg)
+            self.sendMessage(MsgName2Id["CLIENT_DONE_INTEREST_RESP"], dg)
 
 
-        elif msgType == CLIENT_REMOVE_INTEREST:
+        elif msgType == MsgName2Id["CLIENT_REMOVE_INTEREST"]:
             # Client wants to remove an interest
             handle = di.getUint16()
             contextId = di.getUint32() # Might be optional
 
             # Did the interest exist?
             if not handle in self.interests:
-                print("Client tried to remove an unexisting interest")
+                print("Client tried to remove a nonexisting interest")
                 return
 
             # We get what the interest was
@@ -663,21 +668,21 @@ class Client:
                 if do.parentId == oldParentId and do.zoneId in oldZones and not self.hasInterest(do.parentId, do.zoneId):
                     dg = Datagram()
                     dg.addUint32(do.doId)
-                    self.sendMessage(CLIENT_OBJECT_DISABLE, dg)
+                    self.sendMessage(MsgName2Id["CLIENT_OBJECT_DISABLE"], dg)
 
             for do in self.stateServer.dbObjects.values():
                 if do.parentId == oldParentId and do.zoneId in oldZones and not self.hasInterest(do.parentId, do.zoneId):
                     dg = Datagram()
                     dg.addUint32(do.doId)
-                    self.sendMessage(CLIENT_OBJECT_DISABLE, dg)
+                    self.sendMessage(MsgName2Id["CLIENT_OBJECT_DISABLE"], dg)
 
             # We tell the client we're done
             dg = Datagram()
             dg.addUint16(handle)
             dg.addUint32(contextId)
-            self.sendMessage(CLIENT_DONE_INTEREST_RESP, dg)
+            self.sendMessage(MsgName2Id["CLIENT_DONE_INTEREST_RESP"], dg)
 
-        elif msgType == CLIENT_GET_AVATARS:
+        elif msgType == MsgName2Id["CLIENT_GET_AVATARS"]:
             # Client asks us their avatars.
             if not self.account:
                 # TODO Should we boot the client out or just set a bad returnCode?
@@ -688,16 +693,16 @@ class Client:
             dg = Datagram()
             dg.addUint8(0) # returnCode
             self.writeAvatarList(dg)
-            self.sendMessage(CLIENT_GET_AVATARS_RESP, dg)
+            self.sendMessage(MsgName2Id["CLIENT_GET_AVATARS_RESP"], dg)
 
-        elif msgType == CLIENT_SET_AVATAR:
+        elif msgType == MsgName2Id["CLIENT_SET_AVATAR"]:
             # Client picked an avatar.
             # If avId is 0, it disconnected.
             avId = di.getUint32()
 
             self.handleSetAvatar(avId)
 
-        elif msgType == CLIENT_OBJECT_UPDATE_FIELD:
+        elif msgType == MsgName2Id["CLIENT_OBJECT_UPDATE_FIELD"]:
             # Client wants to update a do object
             doId = di.getUint32()
             fieldId = di.getUint16()
@@ -736,7 +741,7 @@ class Client:
                 print("Avatar %d updates %d (dclass %s) field %s" % (self.avatarId, do.doId, do.dclass.getName(), field.getName()))
                 
             if doId in self.__doId2ClsendOverrides and fieldId in self.__doId2ClsendOverrides[doId]:
-                print("Avatar %d updates %d (dclass %s) with clsend overriden field %s" % (self.avatarId, do.doId, do.dclass.getName(), field.getName()))
+                print("Avatar %d updates %d (dclass %s) with clsend overridden field %s" % (self.avatarId, do.doId, do.dclass.getName(), field.getName()))
 
 
             if doId == self.avatarId and fieldId == self.agent.setTalkFieldId:
@@ -744,14 +749,14 @@ class Client:
                 # does not receive it has he sent it.
 
                 # We will change the sender to 4681 (Chat Manager) to bypass this problem
-                self.messageDirector.sendMessage([doId], 4681, STATESERVER_OBJECT_UPDATE_FIELD, dg)
+                self.messageDirector.sendMessage([doId], 4681, AIMsgName2Id["STATESERVER_OBJECT_UPDATE_FIELD"], dg)
 
             else:
                 # We just send the update to the StateServer.
-                self.messageDirector.sendMessage([doId], self.avatarId, STATESERVER_OBJECT_UPDATE_FIELD, dg)
+                self.messageDirector.sendMessage([doId], self.avatarId, AIMsgName2Id["STATESERVER_OBJECT_UPDATE_FIELD"], dg)
 
 
-        elif msgType == CLIENT_OBJECT_LOCATION:
+        elif msgType == MsgName2Id["CLIENT_OBJECT_LOCATION"]:
             # Client wants to move an object
             doId = di.getUint32()
             parentId = di.getUint32()
@@ -766,7 +771,7 @@ class Client:
                 print("Client tried to move an object that doesn't exist!")
                 return
                 
-            # Toontown Game Specfic Code
+            # Toontown Game Specific Code
             avatar = self.databaseServer.manager.loadDatabaseObject(doId)
             canonZoneId = zoneId
             canonHoodId = zoneId
@@ -810,7 +815,7 @@ class Client:
                 if "setZonesVisited" in avatar.fields:
                     zonesVisted = avatar.fields["setZonesVisited"][0]
                     
-                    # If we haven't visted that zone before and it's not Welcome Valleys Token... We have now!
+                    # If we haven't visited that zone before and it's not Welcome Valley's Token... We have now!
                     if canonHoodId != 0 and not canonHoodId in zonesVisted:
                         zonesVisted.append(canonHoodId)
                         avatar.fields["setZonesVisited"] = (zonesVisted,)
@@ -820,7 +825,7 @@ class Client:
                 if "setHoodsVisited" in avatar.fields:
                     zonesVisted = avatar.fields["setHoodsVisited"][0]
                     
-                    # If we haven't visted that zone before and it's not Welcome Valleys Token... We have now!
+                    # If we haven't visited that zone before and it's not Welcome Valley's Token... We have now!
                     if canonHoodId != 0 and not canonHoodId in zonesVisted:
                         zonesVisted.append(canonHoodId)
                         avatar.fields["setHoodsVisited"] = (zonesVisted,)
@@ -833,9 +838,9 @@ class Client:
             dg = Datagram()
             dg.addUint32(parentId)
             dg.addUint32(zoneId)
-            self.messageDirector.sendMessage([doId], self.avatarId, STATESERVER_OBJECT_SET_ZONE, dg)
+            self.messageDirector.sendMessage([doId], self.avatarId, AIMsgName2Id["STATESERVER_OBJECT_SET_ZONE"], dg)
 
-        elif msgType == CLIENT_REMOVE_FRIEND:
+        elif msgType == MsgName2Id["CLIENT_REMOVE_FRIEND"]:
             # Friend to remove
             doId = di.getUint32()
 
@@ -875,12 +880,12 @@ class Client:
                 # Save the removal to the database.
                 self.databaseServer.saveDatabaseObject(avatar)
 
-        elif msgType in (CLIENT_GET_FRIEND_LIST, CLIENT_GET_FRIEND_LIST_EXTENDED):
+        elif msgType in (MsgName2Id["CLIENT_GET_FRIEND_LIST"], MsgName2Id["CLIENT_GET_FRIEND_LIST_EXTENDED"]):
             # We support both types of getting the friends list here.
-            if msgType == CLIENT_GET_FRIEND_LIST:
-                sendId = CLIENT_GET_FRIEND_LIST_RESP
-            elif msgType == CLIENT_GET_FRIEND_LIST_EXTENDED:
-                sendId = CLIENT_GET_FRIEND_LIST_EXTENDED_RESP
+            if msgType == MsgName2Id["CLIENT_GET_FRIEND_LIST"]:
+                sendId = MsgName2Id["CLIENT_GET_FRIEND_LIST_RESP"]
+            elif msgType == MsgName2Id["CLIENT_GET_FRIEND_LIST_EXTENDED"]:
+                sendId = MsgName2Id["CLIENT_GET_FRIEND_LIST_EXTENDED_RESP"]
 
             # If we don't have a chosen response. Just don't respond at all.
             # There's no point in humoring them.
@@ -918,7 +923,7 @@ class Client:
                 # We're missing a required field, And this version of getting the list doesn't sanity check these
                 # individually.
                 # We only run this check for the non-extended friends list type.
-                if msgType == CLIENT_GET_FRIEND_LIST and (not 'setName' in friendsFields or not 'setDNAString' in friendsFields):
+                if msgType == MsgName2Id["CLIENT_GET_FRIEND_LIST"] and (not 'setName' in friendsFields or not 'setDNAString' in friendsFields):
                     print("Friend %d for Avatar %d is missing a field in the database!" % (friendId, self.avatarId))
                     continue
 
@@ -960,13 +965,13 @@ class Client:
 
             self.sendMessage(sendId, dg)
 
-        elif msgType in (CLIENT_GET_AVATAR_DETAILS, CLIENT_GET_PET_DETAILS):
-            if msgType == CLIENT_GET_AVATAR_DETAILS:
+        elif msgType in (MsgName2Id["CLIENT_GET_AVATAR_DETAILS"], MsgName2Id["CLIENT_GET_PET_DETAILS"]):
+            if msgType == MsgName2Id["CLIENT_GET_AVATAR_DETAILS"]:
                 # Details about a Toon are being requested.
-                sendId = CLIENT_GET_AVATAR_DETAILS_RESP
-            elif msgType == CLIENT_GET_PET_DETAILS:
+                sendId = MsgName2Id["CLIENT_GET_AVATAR_DETAILS_RESP"]
+            elif msgType == MsgName2Id["CLIENT_GET_PET_DETAILS"]:
                 # Details about a Pet are being requested.
-                sendId = CLIENT_GET_PET_DETAILS_RESP
+                sendId = CMsgName2Id["LIENT_GET_PET_DETAILS_RESP"]
 
             # The indentifier of the object.
             doId = di.getUint32()
@@ -990,11 +995,11 @@ class Client:
             # Tell the client about the response.
             self.sendMessage(sendId, dg)
 
-        elif msgType == CLIENT_GET_FRIEND_LIST:
+        elif msgType == MsgName2Id["CLIENT_GET_FRIEND_LIST"]:
             dg = Datagram()
             dg.addUint8(0)
             dg.addUint16(0)
-            self.sendMessage(CLIENT_GET_FRIEND_LIST_RESP, dg)
+            self.sendMessage(MsgName2Id["CLIENT_GET_FRIEND_LIST_RESP"], dg)
 
         else:
             print("Received unknown message: %d" % msgType)
@@ -1052,17 +1057,17 @@ class Client:
 
             return response
         
-        if tokenType == CLIENT_LOGIN_2_GREEN:
+        if tokenType == MsgTypes.CLIENT_LOGIN_2_GREEN:
             print("CLIENT_LOGIN_2_GREEN is not yet a supported token type!")
             self.disconnect(106) # The field indicating what type of token we are processing is invalid.
             return get_response(5, "Unsupported playtoken type.")
-        elif tokenType == CLIENT_LOGIN_2_BLUE:
+        elif tokenType == MsgTypes.CLIENT_LOGIN_2_BLUE:
             print("CLIENT_LOGIN_2_BLUE is not yet a supported token type!")
             self.disconnect(106) # The field indicating what type of token we are processing is invalid.
             return get_response(5, "Unsupported playtoken type.")
         # SSL Encoded Token, The main token type used for deployment and devs.
-        elif tokenType == CLIENT_LOGIN_3_DISL_TOKEN or tokenType == CLIENT_LOGIN_2_PLAY_TOKEN:
-            # Check if the token is encrypted, If not we only accept plain tokens on a dev enviorment.
+        elif tokenType == MsgTypes.CLIENT_LOGIN_3_DISL_TOKEN or tokenType == MsgTypes.CLIENT_LOGIN_2_PLAY_TOKEN:
+            # Check if the token is encrypted, If not we only accept plain tokens on a dev environment.
             encrypted = False
             try:
                 base64.b64decode(playToken, validate=True)
@@ -1073,7 +1078,7 @@ class Client:
             if not encrypted and not __debug__:
                 print("Rejecting plaintext token on non-development OTP Server.")
                 self.disconnect(123) # The client agent is in a mode that disallows this type of login.
-                return get_response(3, "Ill-formated playtoken.")
+                return get_response(3, "Ill-formatted playtoken.")
                 
             # Pre-decrypt our play token.
             try:
@@ -1081,11 +1086,11 @@ class Client:
             except Exception as e:
                 traceback.print_exc()
                 self.disconnect(122) # Error decrypting OpenSSl token in CLIENT_LOGIN_2.
-                return get_response(3, "Ill-formated playtoken.")
+                return get_response(3, "Ill-formatted playtoken.")
                 
             print(playToken)
             
-            # If we don't find this paramater, It's a old style token. Which are depercated. 
+            # If we don't find this parameter, It's a old style token. Which are deprecated. 
             if playToken.find(b"TOONTOWN_GAME_KEY") >= 0:
                 return self.parse_DISL_play_token(playToken)
                 
@@ -1122,7 +1127,7 @@ class Client:
         if playToken.find(b"TOONTOWN_GAME_KEY") < 0:
             print("Failed to parse play token, Format is invalid!")
             response["returnCode"] = 3
-            response["respString"] = "Ill-formated playtoken."
+            response["respString"] = "Ill-formatted playtoken."
             self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
             return response
             
@@ -1131,7 +1136,7 @@ class Client:
         except:
             print("Failed to parse play token, Format is invalid!")
             response["returnCode"] = 3
-            response["respString"] = "Ill-formated playtoken."
+            response["respString"] = "Ill-formatted playtoken."
             self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
             return response
             
@@ -1161,14 +1166,14 @@ class Client:
         # Set the required response info.
         response["accountName"] = account_name
         
-        # Get our account name apporval from the play token.
+        # Get our account name approval from the play token.
         accountNumber = variables.get("ACCOUNT_NUMBER", None)
         # If we got our account number, Set it in our response.
         if accountNumber:
             # Set the required response info.
             response["accountNumber"] = int(accountNumber)
             
-        # Get our account name apporval from the play token.
+        # Get our account name approval from the play token.
         userName = variables.get("GAME_USERNAME", None)
         # If we got our username, Set it in our response.
         if userName:
@@ -1260,9 +1265,9 @@ class Client:
             self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
             return response
 
-        # Get our account name apporval from the play token.
+        # Get our account name approval from the play token.
         account_name_apporval = variables.get("ACCOUNT_NAME_APPROVAL", None)
-        # If we couldn't get our account name apporval, The token is invalid.
+        # If we couldn't get our account name approval, The token is invalid.
         if not account_name_apporval:
             print("Couldn't find required field 'ACCOUNT_NAME_APPROVAL' in playToken for '%s'!" % (response["accountName"]))
             response["returnCode"] = 2
@@ -1614,7 +1619,7 @@ class Client:
         if packOk:
             dg = Datagram(packer.getBytes())
             # Send the message as if it was from the dos parent.
-            self.messageDirector.sendMessage([do.doId], do.parentId, STATESERVER_OBJECT_UPDATE_FIELD, dg)
+            self.messageDirector.sendMessage([do.doId], do.parentId, AIMsgName2Id["STATESERVER_OBJECT_UPDATE_FIELD"], dg)
 
     def hasInterest(self, parentId, zoneId):
         """
@@ -1672,7 +1677,7 @@ class Client:
             dg.addUint32(do.doId)
             do.packRequiredBroadcast(dg)
             do.packOther(dg)
-            self.sendMessage(CLIENT_CREATE_OBJECT_REQUIRED_OTHER, dg)
+            self.sendMessage(MsgName2Id["CLIENT_CREATE_OBJECT_REQUIRED_OTHER"], dg)
 
     def handleSetAvatar(self, avId):
         # If avId is 0, That means it's a request to remove our avatar.
@@ -1709,7 +1714,7 @@ class Client:
         dg.addUint32(avatar.doId)
         avatar.packRequired(dg)
         avatar.packOther(dg)
-        self.messageDirector.sendMessage([20100000], avatar.doId, STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER, dg)
+        self.messageDirector.sendMessage([20100000], avatar.doId, MsgName2Id["STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER"], dg)
 
         # We probably should wait for an answer, but we're not threaded and everything is happening on the same script
         # (tl;dr it's blocking), so we won't.
@@ -1722,7 +1727,7 @@ class Client:
         dg.addUint32(avatar.doId)
         dg.addUint8(0)
         avatar.packRequired(dg)
-        self.sendMessage(CLIENT_GET_AVATAR_DETAILS_RESP, dg)
+        self.sendMessage(MsgName2Id["CLIENT_GET_AVATAR_DETAILS_RESP"], dg)
 
         # If we have friends... We should probably let them know we're online!
         if "setFriendsList" in avatar.fields:
@@ -1738,7 +1743,7 @@ class Client:
                 if client.avatarId in friendIds:
                     dg = Datagram()
                     dg.addUint32(self.avatarId)
-                    client.sendMessage(CLIENT_FRIEND_ONLINE, dg)
+                    client.sendMessage(MsgName2Id["CLIENT_FRIEND_ONLINE"], dg)
 
     def removeAvatar(self):
         """
@@ -1765,10 +1770,10 @@ class Client:
                 if client.avatarId in friendIds:
                     dg = Datagram()
                     dg.addUint32(self.avatarId)
-                    client.sendMessage(CLIENT_FRIEND_OFFLINE, dg)
+                    client.sendMessage(MsgName2Id["CLIENT_FRIEND_OFFLINE"], dg)
 
         # We ask State Server to delete our object
         dg = Datagram()
         dg.addUint32(self.avatarId)
-        self.messageDirector.sendMessage([self.avatarId], self.avatarId, STATESERVER_OBJECT_DELETE_RAM, dg)
+        self.messageDirector.sendMessage([self.avatarId], self.avatarId, AIMsgName2Id["STATESERVER_OBJECT_DELETE_RAM"], dg)
         self.avatarId = 0

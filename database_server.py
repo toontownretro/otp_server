@@ -1,5 +1,10 @@
-import hashlib, os, sys, uuid, string, random
+from panda3d.core import ConfigVariableString, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
+from panda3d.direct import DCPacker
 
+from otp.ai.AIMsgTypes import AIMsgName2Id
+from toontown.ai.ToontownAIMsgTypes import TTAIMsgName2Id
+
+import hashlib, os, sys, uuid, string, random
 from datetime import datetime, timedelta
 
 try:
@@ -8,13 +13,9 @@ try:
 except:
     import json
 
-from panda3d.core import ConfigVariableString, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
-from panda3d.direct import DCPacker
-
 from database_manager import DatabaseManager
 from database_object import DatabaseObject
 from distributed_object import DistributedObject
-from msgtypes import *
 
 class DatabaseServer:
     def __init__(self, otp):
@@ -29,7 +30,7 @@ class DatabaseServer:
         self.messageDirector = self.otp.messageDirector
         self.stateServer = self.otp.stateServer
         
-        # Dictonaries containing info relating to all of our DC Objects with the DcObjectType field.
+        # Dictionaries containing info relating to all of our DC Objects with the DcObjectType field.
         self.dcObjectTypes = {}
         self.dcObjectTypeFromName = {}
         self.caculateDCObjects()
@@ -96,29 +97,29 @@ class DatabaseServer:
         """
         for channel in channels:
             if channel == 4003:
-                if code == DBSERVER_GET_STORED_VALUES:
+                if code == AIMsgName2Id["DBSERVER_GET_STORED_VALUES"]:
                     self.getStoredValues(sender, datagram)
                     
-                elif code == DBSERVER_SET_STORED_VALUES:
+                elif code == AIMsgName2Id["DBSERVER_SET_STORED_VALUES"]:
                     self.setStoredValues(sender, datagram)
                     
-                elif code == DBSERVER_CREATE_STORED_OBJECT:
+                elif code == AIMsgName2Id["DBSERVER_CREATE_STORED_OBJECT"]:
                     self.createStoredObject(sender, datagram)
                     
-                elif code == DBSERVER_DELETE_STORED_OBJECT:
+                elif code == AIMsgName2Id["DBSERVER_DELETE_STORED_OBJECT"]:
                     print("DBSERVER_DELETE_STORED_OBJECT")
                     
-                elif code == DBSERVER_GET_ESTATE:
+                elif code == TTAIMsgName2Id["DBSERVER_GET_ESTATE"]:
                     self.getEstate(sender, datagram)
                     
-                elif code == DBSERVER_MAKE_FRIENDS:
+                elif code == AIMsgName2Id["DBSERVER_MAKE_FRIENDS"]:
                     self.makeFriends(sender, datagram)
                     
-                elif code == DBSERVER_REQUEST_SECRET:
+                elif code == AIMsgName2Id["DBSERVER_REQUEST_SECRET"]:
                     print("DBSERVER_REQUEST_SECRET")
                     self.requestSecret(sender, datagram)
                     
-                elif code == DBSERVER_SUBMIT_SECRET:
+                elif code == AIMsgName2Id["DBSERVER_SUBMIT_SECRET"]:
                     print("DBSERVER_SUBMIT_SECRET")
                     self.submitSecret(sender, datagram)
                     
@@ -129,7 +130,7 @@ class DatabaseServer:
                 di = DatagramIterator(datagram)
                 do = self.manager.cache[channel]
                 
-                if code == STATESERVER_OBJECT_UPDATE_FIELD:
+                if code == AIMsgName2Id["STATESERVER_OBJECT_UPDATE_FIELD"]:
                     # We are asked to update a field
                     doId = di.getUint32()
                     fieldId = di.getUint16()
@@ -178,7 +179,7 @@ class DatabaseServer:
             # Failed to get our object. So we just add our response code.
             dg.addUint8(1)
             # Send out our response.
-            self.messageDirector.sendMessage([sender], 20100000, DBSERVER_GET_STORED_VALUES_RESP, dg)
+            self.messageDirector.sendMessage([sender], 20100000, AIMsgName2Id["DBSERVER_GET_STORED_VALUES_RESP"], dg)
             return
             
         dg.addUint8(0)
@@ -212,7 +213,7 @@ class DatabaseServer:
             dg.addUint8(foundField)
 
         # Send out our response.
-        self.messageDirector.sendMessage([sender], 20100000, DBSERVER_GET_STORED_VALUES_RESP, dg)
+        self.messageDirector.sendMessage([sender], 20100000, AIMsgName2Id["DBSERVER_GET_STORED_VALUES_RESP"], dg)
         
         # Generate our db object if needed!
         if do.dclass.getName() in list(self.dcObjectTypeFromName.keys()):
@@ -310,7 +311,7 @@ class DatabaseServer:
             dg.addUint8(1)
             
             # Send out our response.
-            self.messageDirector.sendMessage([sender], 20100000, DBSERVER_CREATE_STORED_OBJECT_RESP, dg)
+            self.messageDirector.sendMessage([sender], 20100000, AIMsgName2Id["DBSERVER_CREATE_STORED_OBJECT_RESP"], dg)
             return
         
         # Create a database object from our dc object type.
@@ -337,14 +338,14 @@ class DatabaseServer:
         # Add our context.
         dg.addUint32(context)
         
-        # We succesfully created and set the fields of the database object.
+        # We successfully created and set the fields of the database object.
         dg.addUint8(0)
         
         # Add the resulting object doId.
         dg.addUint32(dbObject.doId)
         
         # Send out our response.
-        self.messageDirector.sendMessage([sender], 20100000, DBSERVER_CREATE_STORED_OBJECT_RESP, dg)
+        self.messageDirector.sendMessage([sender], 20100000, AIMsgName2Id["DBSERVER_CREATE_STORED_OBJECT_RESP"], dg)
 
     def getEstate(self, sender, datagram):
         """
@@ -366,7 +367,7 @@ class DatabaseServer:
         
         if not self.manager.hasDatabaseObject(doId):
             dg.addUint8(1) # Failed to get our avatar, So we can't get their houses either!
-            self.messageDirector.sendMessage([sender], 20100000, DBSERVER_GET_ESTATE_RESP, dg)
+            self.messageDirector.sendMessage([sender], 20100000, TTAIMsgName2Id["DBSERVER_GET_ESTATE_RESP"], dg)
             return
             
         currentAvatar = self.manager.loadDatabaseObject(doId)
@@ -374,7 +375,7 @@ class DatabaseServer:
         # Somehow we don't have an account!
         if not 'setDISLid' in currentAvatar.fields:
             dg.addUint8(1) # Failed to get our avatar, So we can't get their houses either!
-            self.messageDirector.sendMessage([sender], 20100000, DBSERVER_GET_ESTATE_RESP, dg)
+            self.messageDirector.sendMessage([sender], 20100000, TTAIMsgName2Id["DBSERVER_GET_ESTATE_RESP"], dg)
             return
             
         accountId = currentAvatar.fields['setDISLid'][0]
@@ -382,7 +383,7 @@ class DatabaseServer:
         # Our account doesn't exist!?
         if not self.manager.hasDatabaseObject(accountId):
             dg.addUint8(1) # Failed to get our avatar, So we can't get their houses either!
-            self.messageDirector.sendMessage([sender], 20100000, DBSERVER_GET_ESTATE_RESP, dg)
+            self.messageDirector.sendMessage([sender], 20100000, TTAIMsgName2Id["DBSERVER_GET_ESTATE_RESP"], dg)
             return
             
         account = self.manager.loadDatabaseObject(accountId)
@@ -535,7 +536,7 @@ class DatabaseServer:
         dg.addUint16(foundHouses)
         
         # Add in if we found a house or not, We don't really check this as of rn.
-        # We've either failed eariler or gotten to this point.
+        # We've either failed earlier or gotten to this point.
         for i in range(0, len(houseData)):
             dg.addUint16(0) #hvLen, This isn't used anymore either.
             for j in range(0, houseLen):
@@ -550,7 +551,7 @@ class DatabaseServer:
             dg.addUint32(pet.doId)
         
         # We can FINALLY send our message.
-        self.messageDirector.sendMessage([sender], 20100000, DBSERVER_GET_ESTATE_RESP, dg)
+        self.messageDirector.sendMessage([sender], 20100000, TTAIMsgName2Id["DBSERVER_GET_ESTATE_RESP"], dg)
 
     def makeFriends(self, sender, datagram):
         di = DatagramIterator(datagram)
@@ -569,12 +570,12 @@ class DatabaseServer:
         
         dg = Datagram()
         
-        # If one or netiher of the database objects exist. They can NOT become friends.
+        # If one or neither of the database objects exist. They can NOT become friends.
         if not self.manager.hasDatabaseObject(friendIdA) or not self.manager.hasDatabaseObject(friendIdB):
             dg.addUint8(False)
             dg.addUint32(context)
             # Send out our response.
-            self.messageDirector.sendMessage([sender], 20100000, DBSERVER_MAKE_FRIENDS_RESP, dg)
+            self.messageDirector.sendMessage([sender], 20100000, AIMsgName2Id["DBSERVER_MAKE_FRIENDS_RESP"], dg)
             return
             
         # Load the database objects for our friends.
@@ -586,7 +587,7 @@ class DatabaseServer:
             dg.addUint8(False)
             dg.addUint32(context)
             # Send out our response.
-            self.messageDirector.sendMessage([sender], 20100000, DBSERVER_MAKE_FRIENDS_RESP, dg)
+            self.messageDirector.sendMessage([sender], 20100000, AIMsgName2Id["DBSERVER_MAKE_FRIENDS_RESP"], dg)
             return
             
         # Make sure we have the field already.
@@ -634,7 +635,7 @@ class DatabaseServer:
         dg.addUint8(True)
         dg.addUint32(context)
         
-        self.messageDirector.sendMessage([sender], 20100000, DBSERVER_MAKE_FRIENDS_RESP, dg)
+        self.messageDirector.sendMessage([sender], 20100000, AIMsgName2Id["DBSERVER_MAKE_FRIENDS_RESP"], dg)
         
         # Save the database objects to make sure we don't lose our changes.
         self.manager.saveDatabaseObject(friendA)
@@ -688,7 +689,7 @@ class DatabaseServer:
         dg.addString(secret)
         dg.addUint32(requesterId)
 
-        self.messageDirector.sendMessage([sender], 20100000, DBSERVER_REQUEST_SECRET_RESP, dg)
+        self.messageDirector.sendMessage([sender], 20100000, AIMsgName2Id["DBSERVER_REQUEST_SECRET_RESP"], dg)
         
     def submitSecret(self, sender, datagram):
         di = DatagramIterator(datagram)
@@ -737,4 +738,4 @@ class DatabaseServer:
         dg.addUint32(requesterId)
         dg.addUint32(avId)
 
-        self.messageDirector.sendMessage([sender], 20100000, DBSERVER_SUBMIT_SECRET_RESP, dg)
+        self.messageDirector.sendMessage([sender], 20100000, AIMsgName2Id["DBSERVER_SUBMIT_SECRET_RESP"], dg)

@@ -34,7 +34,7 @@ class DNAParser:
         self.data = data 
         self.position = position 
         
-        # This fixes a SINGLE file and I don't think i should even do this shit
+        # This fixes a SINGLE file and I don't think I should even do this shit
         if self.data and self.data[0] == " ":
             self.position = self.data.index("\n")
         
