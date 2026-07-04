@@ -1,10 +1,9 @@
-from panda3d.core import Datagram, DatagramIterator, Filename
+import os, socket, select, ssl, time
+
+from panda3d.core import ConfigVariableString, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
+
 from dnaparser import loadDNAFile, DNAStorage
 from msgtypes import *
-import socket
-import time
-import ssl
-
 
 class ClientAgent:
     def __init__(self, otp):
@@ -27,66 +26,104 @@ class ClientAgent:
         self.sock = sock #context.wrap_socket(sock, server_side=True)
         self.clients = []
         
+        self.visgroups = {}
+            
+        self.nameDictionary = {}
+                
+        # Special fields IDs (cache)
+        self.setTalkFieldId = self.dc.getClassByName("TalkPath_owner").getFieldByName("setTalk").getNumber()
+        
+        self.readFiles()
+        
+    def readFiles(self):
+        # Get our Panda3D Virtual File System.
+        vfs = VirtualFileSystem.getGlobalPtr()
+        
+        # Look for our file locations and read them in.
+        searchPath = DSearchPath()
+        
+        # In other environments, including the dev environment, look here:
+        toontownPath = os.path.expandvars('$TOONTOWN') or './toontown'
+        searchPath.appendDirectory(Filename.fromOsSpecific(os.path.expandvars(toontownPath + '/src/configfiles')))
+        
+        ttmodelsPath = os.path.expandvars('$TTMODELS') or './ttmodels'
+        searchPath.appendDirectory(Filename.fromOsSpecific(os.path.expandvars(ttmodelsPath + '/src/dna')))
+        
         # Every DNA file with visgroups. We don't care about all of them.
         dnaFiles = [
             "cog_hq_cashbot_sz.dna",
+            
             "cog_hq_lawbot_sz.dna",
+            
             "cog_hq_sellbot_11200.dna",
             "cog_hq_sellbot_sz.dna",
-            "daisys_garden_5100.dna",
-            "daisys_garden_5200.dna",
-            "daisys_garden_5300.dna",
-            #"daisys_garden_sz.dna",
-            "donalds_dock_1100.dna",
-            "donalds_dock_1200.dna",
-            "donalds_dock_1300.dna",
-            #"donalds_dock_sz.dna",
-            "donalds_dreamland_9100.dna",
-            "donalds_dreamland_9200.dna",
-            #"donalds_dreamland_sz.dna",
-            #"estate_1.dna",
-            #"golf_zone_sz.dna",
-            #"goofy_speedway_sz.dna",
-            "minnies_melody_land_4100.dna",
-            "minnies_melody_land_4200.dna",
-            "minnies_melody_land_4300.dna",
-            #"minnies_melody_land_sz.dna",
-            #"outdoor_zone_sz.dna",
-            #"party_sz.dna",
-            "the_burrrgh_3100.dna",
-            "the_burrrgh_3200.dna",
-            "the_burrrgh_3300.dna",
-            #"the_burrrgh_sz.dna",
-            "toontown_central_2100.dna",
-            "toontown_central_2200.dna",
-            "toontown_central_2300.dna",
-            #"toontown_central_sz.dna",
-            #"tutorial_street.dna"
+            
+            # For now just use English
+            "donalds_dock_1100_english.dna",
+            "donalds_dock_1200_english.dna",
+            "donalds_dock_1300_english.dna",
+            
+            "toontown_central_2100_english.dna",
+            "toontown_central_2200_english.dna",
+            "toontown_central_2300_english.dna",
+            
+            "the_burrrgh_3100_english.dna",
+            "the_burrrgh_3200_english.dna",
+            "the_burrrgh_3300_english.dna",
+            
+            "minnies_melody_land_4100_english.dna",
+            "minnies_melody_land_4200_english.dna",
+            "minnies_melody_land_4300_english.dna",
+            
+            "daisys_garden_5100_english.dna",
+            "daisys_garden_5200_english.dna",
+            "daisys_garden_5300_english.dna",
+            
+            "donalds_dreamland_9100_english.dna",
+            "donalds_dreamland_9200_english.dna",
         ]
         
         # We cache the visgroups
-        self.visgroups = {}
         dnaStore = DNAStorage()
         
         for filename in dnaFiles:
-            loadDNAFile(dnaStore, Filename("dna", filename))
+            # This might be problematic for prebuilt
+            # maybe use built instead?
+            filepath = Filename(filename)
+            vfs.resolveFilename(filepath, searchPath)
+            loadDNAFile(dnaStore, filepath)
             
         for visgroup in dnaStore.visGroups:
             self.visgroups[int(visgroup.name)] = [int(i) for i in visgroup.visibles]
             
-        # We read the NameMaster
-        self.nameDictionary = {}
-        with open("../toontown/src/configfiles/NameMasterEnglish.txt", "r") as file:
+        # Let's read our NameMaster
+        
+        # Check which language should be used, defaults to English
+        # Perhaps look for product code instead of language?
+        language = ConfigVariableString("language", "english").getValue()
+        
+        self.NameMaster = "NameMasterEnglish.txt"
+        if language == 'castillian':
+            self.NameMaster = "NameMaster_castillian.txt"
+        elif language == "japanese":
+            self.NameMaster = "NameMaster_japanese.txt"
+        elif language == "german":
+            self.NameMaster = "NameMaster_german.txt"
+        elif language == "french":
+            self.NameMaster = "NameMaster_french.txt"
+        elif language == "portuguese":
+            self.NameMaster = "NameMaster_portuguese.txt"
+            
+        filepath = Filename(self.NameMaster)
+        vfs.resolveFilename(filepath, searchPath)
+
+        with open(filepath, "r") as file:
             for line in file:
                 if line.startswith("#"):
                     continue
                     
                 nameId, nameCategory, name = line.split("*", 2)
                 self.nameDictionary[int(nameId)] = (int(nameCategory), name.strip())
-                
-        # Special fields IDs (cache)
-        self.setTalkFieldId = self.dc.getClassByName("TalkPath_owner").getFieldByName("setTalk").getNumber()
-        
             
     def announceCreate(self, do, sender):
         # We send to the interested clients that they have access to a brand new object!

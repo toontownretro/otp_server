@@ -29,7 +29,7 @@ class DatabaseServer:
         self.messageDirector = self.otp.messageDirector
         self.stateServer = self.otp.stateServer
         
-        # Dictonaries containing info relating to all of our DC Objects with the DcObjectType field.
+        # Dictionaries containing info relating to all of our DC Objects with the DcObjectType field.
         self.dcObjectTypes = {}
         self.dcObjectTypeFromName = {}
         self.caculateDCObjects()
@@ -337,7 +337,7 @@ class DatabaseServer:
         # Add our context.
         dg.addUint32(context)
         
-        # We succesfully created and set the fields of the database object.
+        # We successfully created and set the fields of the database object.
         dg.addUint8(0)
         
         # Add the resulting object doId.
@@ -534,7 +534,7 @@ class DatabaseServer:
         dg.addUint16(foundHouses)
         
         # Add in if we found a house or not, We don't really check this as of rn.
-        # We've either failed eariler or gotten to this point.
+        # We've either failed earlier or gotten to this point.
         for i in range(0, len(houseData)):
             dg.addUint16(0) #hvLen, This isn't used anymore either.
             for j in range(0, houseLen):
@@ -568,7 +568,7 @@ class DatabaseServer:
         
         dg = Datagram()
         
-        # If one or netiher of the database objects exist. They can NOT become friends.
+        # If one or neither of the database objects exist. They can NOT become friends.
         if not self.manager.hasDatabaseObject(friendIdA) or not self.manager.hasDatabaseObject(friendIdB):
             dg.addUint8(False)
             dg.addUint32(context)

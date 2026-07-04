@@ -234,7 +234,7 @@ class StateServer:
             if do.doId != doId:
                 raise Exception("Received stateserver delete object message for an object! (channel %d doId %d)" % (channel, doId))
                 
-            # This is very likely a uninitalized DB object.
+            # This is very likely a uninitialized DB object.
             # We don't want to delete these yet as they are used
             # for a generate in the future.
             if do.zoneId == 0 and do.parentId == 0:
@@ -583,7 +583,7 @@ class StateServer:
             else:
                 do = self.objects[channel]
                 
-            # This is very likely a uninitalized DB object.
+            # This is very likely a uninitialized DB object.
             # We don't want to delete these yet as they are used
             # for a generate in the future.
             if do.zoneId == 0 and do.parentId == 0:

@@ -176,18 +176,18 @@ class Client:
                     accountDoId = self.account.doId
                     self.databaseServer.manager.backend.addToAccountServer(userName, self.account.doId)
                     
-                # Caculate the amount of days since our account was created.
+                # Calculate the amount of days since our account was created.
                  
                 # Get our creation time from the stored date string.
                 creation_time = datetime.strptime(self.account.fields.get("CREATED", now.strftime("%Y-%m-%d %H:%M:%S")), "%Y-%m-%d %H:%M:%S")
                  
-                # Caculate the difference in dates.
+                # Calculate the difference in dates.
                 delta_time = now - creation_time
                  
                 # Get the difference in days, That's how many days our account has been created.
                 accountDays = abs(delta_time.days)
                  
-            # If no errors occured and we got our account, Then we authorize this client to use the other messages.
+            # If no errors occurred and we got our account, Then we authorize this client to use the other messages.
             if returnCode == 0 and self.account: self.__authorized = True
 
             datagram = Datagram()
@@ -294,23 +294,23 @@ class Client:
                         returnCode = 501
                         responseStr = "Internal Error"
 
-                # Caculate the amount of days since our account was created.
+                # Calculate the amount of days since our account was created.
 
                 # Get our creation time from the stored date string.
                 creation_time = datetime.strptime(self.account.fields.get("CREATED", now.strftime("%Y-%m-%d %H:%M:%S")), "%Y-%m-%d %H:%M:%S")
 
-                # Caculate the difference in dates.
+                # Calculate the difference in dates.
                 delta_time = now - creation_time
 
                 # Get the difference in days, That's how many days our account has been created.
                 accountDays = abs(delta_time.days)
             else:
-                print("ERROR: Got ill formated token that passed our checks!")
+                print("ERROR: Got ill formatted token that passed our checks!")
                 returnCode = 3
                 responseStr = "Internal Error"
                 
             
-            # If no errors occured and we got our account, Then we authorize this client to use the other messages.
+            # If no errors occurred and we got our account, Then we authorize this client to use the other messages.
             if returnCode == 0 and self.account: self.__authorized = True
             print(returnCode, self.account, self.__authorized)
 
@@ -377,9 +377,9 @@ class Client:
             # So just leave it as a specialized internal dev one..
             fields["setAccountName"] = "internal_%s" % str(hex(self.account.doId))
             
-            # DISL likely stood for Disney Internal Server Login. 
+            # DISL is an acronym for Disney Integrated Services Layer.
             # This server must of had it's own set of accounts which included names
-            # and ids seperate from the OTP Server. 
+            # and ids separate from the OTP Server.
             # Since we have no such server, The fields are unused for us.
             
             # The DISL Name is the name of the Disney XD Account (Global Account).
@@ -736,7 +736,7 @@ class Client:
                 print("Avatar %d updates %d (dclass %s) field %s" % (self.avatarId, do.doId, do.dclass.getName(), field.getName()))
                 
             if doId in self.__doId2ClsendOverrides and fieldId in self.__doId2ClsendOverrides[doId]:
-                print("Avatar %d updates %d (dclass %s) with clsend overriden field %s" % (self.avatarId, do.doId, do.dclass.getName(), field.getName()))
+                print("Avatar %d updates %d (dclass %s) with clsend overridden field %s" % (self.avatarId, do.doId, do.dclass.getName(), field.getName()))
 
 
             if doId == self.avatarId and fieldId == self.agent.setTalkFieldId:
@@ -766,7 +766,7 @@ class Client:
                 print("Client tried to move an object that doesn't exist!")
                 return
                 
-            # Toontown Game Specfic Code
+            # Toontown Game Specific Code
             avatar = self.databaseServer.manager.loadDatabaseObject(doId)
             canonZoneId = zoneId
             canonHoodId = zoneId
@@ -808,22 +808,22 @@ class Client:
                     self.handleFieldUpdate(avatar.doId, "setDefaultZone", avatar.fields["setDefaultZone"])
                     
                 if "setZonesVisited" in avatar.fields:
-                    zonesVisted = avatar.fields["setZonesVisited"][0]
+                    zonesvisited = avatar.fields["setZonesVisited"][0]
                     
-                    # If we haven't visted that zone before and it's not Welcome Valleys Token... We have now!
-                    if canonHoodId != 0 and not canonHoodId in zonesVisted:
-                        zonesVisted.append(canonHoodId)
-                        avatar.fields["setZonesVisited"] = (zonesVisted,)
+                    # If we haven't visited that zone before and it's not Welcome Valley's Token... We have now!
+                    if canonHoodId != 0 and not canonHoodId in zonesvisited:
+                        zonesvisited.append(canonHoodId)
+                        avatar.fields["setZonesVisited"] = (zonesvisited,)
                         
                     self.handleFieldUpdate(avatar.doId, "setZonesVisited", avatar.fields["setZonesVisited"])
                     
                 if "setHoodsVisited" in avatar.fields:
-                    zonesVisted = avatar.fields["setHoodsVisited"][0]
+                    zonesvisited = avatar.fields["setHoodsVisited"][0]
                     
-                    # If we haven't visted that zone before and it's not Welcome Valleys Token... We have now!
-                    if canonHoodId != 0 and not canonHoodId in zonesVisted:
-                        zonesVisted.append(canonHoodId)
-                        avatar.fields["setHoodsVisited"] = (zonesVisted,)
+                    # If we haven't visited that zone before and it's not Welcome Valley's Token... We have now!
+                    if canonHoodId != 0 and not canonHoodId in zonesvisited:
+                        zonesvisited.append(canonHoodId)
+                        avatar.fields["setHoodsVisited"] = (zonesvisited,)
                     
                     self.handleFieldUpdate(avatar.doId, "setHoodsVisited", avatar.fields["setHoodsVisited"])
                     
@@ -1073,7 +1073,7 @@ class Client:
             if not encrypted and not __debug__:
                 print("Rejecting plaintext token on non-development OTP Server.")
                 self.disconnect(123) # The client agent is in a mode that disallows this type of login.
-                return get_response(3, "Ill-formated playtoken.")
+                return get_response(3, "Ill-formatted playtoken.")
                 
             # Pre-decrypt our play token.
             try:
@@ -1081,11 +1081,11 @@ class Client:
             except Exception as e:
                 traceback.print_exc()
                 self.disconnect(122) # Error decrypting OpenSSl token in CLIENT_LOGIN_2.
-                return get_response(3, "Ill-formated playtoken.")
+                return get_response(3, "Ill-formatted playtoken.")
                 
             print(playToken)
             
-            # If we don't find this paramater, It's a old style token. Which are depercated. 
+            # If we don't find this parameter, It's a old style token. Which are deprecated. 
             if playToken.find(b"TOONTOWN_GAME_KEY") >= 0:
                 return self.parse_DISL_play_token(playToken)
                 
@@ -1122,7 +1122,7 @@ class Client:
         if playToken.find(b"TOONTOWN_GAME_KEY") < 0:
             print("Failed to parse play token, Format is invalid!")
             response["returnCode"] = 3
-            response["respString"] = "Ill-formated playtoken."
+            response["respString"] = "Ill-formatted playtoken."
             self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
             return response
             
@@ -1131,7 +1131,7 @@ class Client:
         except:
             print("Failed to parse play token, Format is invalid!")
             response["returnCode"] = 3
-            response["respString"] = "Ill-formated playtoken."
+            response["respString"] = "Ill-formatted playtoken."
             self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
             return response
             
@@ -1161,14 +1161,14 @@ class Client:
         # Set the required response info.
         response["accountName"] = account_name
         
-        # Get our account name apporval from the play token.
+        # Get our account name approval from the play token.
         accountNumber = variables.get("ACCOUNT_NUMBER", None)
         # If we got our account number, Set it in our response.
         if accountNumber:
             # Set the required response info.
             response["accountNumber"] = int(accountNumber)
             
-        # Get our account name apporval from the play token.
+        # Get our account name approval from the play token.
         userName = variables.get("GAME_USERNAME", None)
         # If we got our username, Set it in our response.
         if userName:
@@ -1260,10 +1260,10 @@ class Client:
             self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
             return response
 
-        # Get our account name apporval from the play token.
-        account_name_apporval = variables.get("ACCOUNT_NAME_APPROVAL", None)
-        # If we couldn't get our account name apporval, The token is invalid.
-        if not account_name_apporval:
+        # Get our account name approval from the play token.
+        account_name_approval = variables.get("ACCOUNT_NAME_APPROVAL", None)
+        # If we couldn't get our account name approval, The token is invalid.
+        if not account_name_approval:
             print("Couldn't find required field 'ACCOUNT_NAME_APPROVAL' in playToken for '%s'!" % (response["accountName"]))
             response["returnCode"] = 2
             response["respString"] = "Invalid playtoken."
@@ -1271,7 +1271,7 @@ class Client:
             return response
 
         # Set the required response info.
-        response["accountNameApproved"] = account_name_apporval == "YES"
+        response["accountNameApproved"] = account_name_approval == "YES"
             
         # Get our family number from the play token.
         familyNumber = variables.get("FAMILY_NUMBER", None)
@@ -1347,7 +1347,7 @@ class Client:
             # Set the required response info.
             response["whitelistChat"] = True if whitelistChat == "YES" else False
         
-        # Toontown Specfic Variables.
+        # Toontown Specific Variables.
         
         # Get our paid content access level from the play token.
         toontown_access = variables.get("TOONTOWN_ACCESS", None)
@@ -1410,7 +1410,7 @@ class Client:
         if playToken.find(b"PlayToken") < 0:
             print("Failed to parse old play token, Format is invalid!")
             response["returnCode"] = 3
-            response["respString"] = "Ill-formated playtoken."
+            response["respString"] = "Ill-formatted playtoken."
             self.disconnect(103) # There was an error parsing the OpenSSl token for the required fields.
             return response
 
@@ -1544,7 +1544,7 @@ class Client:
 
             avatar = self.databaseServer.manager.loadDatabaseObject(avId)
             if not avatar:
-                print("ERROR: Failed to load avatar %d for account %d, An unknown error has occured!" % (avId, self.account.doId))
+                print("ERROR: Failed to load avatar %d for account %d, An unknown error has occurred!" % (avId, self.account.doId))
                 continue
 
             ndg.addUint32(avatar.doId) # avNum
