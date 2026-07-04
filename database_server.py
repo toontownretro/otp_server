@@ -95,7 +95,7 @@ class DatabaseServer:
         Handle a message
         """
         for channel in channels:
-            if channel == 4003:
+            if channel == DBSERVER_ID:
                 if code == DBSERVER_GET_STORED_VALUES:
                     self.getStoredValues(sender, datagram)
                     
@@ -178,7 +178,7 @@ class DatabaseServer:
             # Failed to get our object. So we just add our response code.
             dg.addUint8(1)
             # Send out our response.
-            self.messageDirector.sendMessage([sender], 20100000, DBSERVER_GET_STORED_VALUES_RESP, dg)
+            self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_GET_STORED_VALUES_RESP, dg)
             return
             
         dg.addUint8(0)
@@ -212,7 +212,7 @@ class DatabaseServer:
             dg.addUint8(foundField)
 
         # Send out our response.
-        self.messageDirector.sendMessage([sender], 20100000, DBSERVER_GET_STORED_VALUES_RESP, dg)
+        self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_GET_STORED_VALUES_RESP, dg)
         
         # Generate our db object if needed!
         if do.dclass.getName() in list(self.dcObjectTypeFromName.keys()):
@@ -310,7 +310,7 @@ class DatabaseServer:
             dg.addUint8(1)
             
             # Send out our response.
-            self.messageDirector.sendMessage([sender], 20100000, DBSERVER_CREATE_STORED_OBJECT_RESP, dg)
+            self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_CREATE_STORED_OBJECT_RESP, dg)
             return
         
         # Create a database object from our dc object type.
@@ -344,7 +344,7 @@ class DatabaseServer:
         dg.addUint32(dbObject.doId)
         
         # Send out our response.
-        self.messageDirector.sendMessage([sender], 20100000, DBSERVER_CREATE_STORED_OBJECT_RESP, dg)
+        self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_CREATE_STORED_OBJECT_RESP, dg)
 
     def getEstate(self, sender, datagram):
         """
@@ -366,35 +366,34 @@ class DatabaseServer:
         
         if not self.manager.hasDatabaseObject(doId):
             dg.addUint8(1) # Failed to get our avatar, So we can't get their houses either!
-            self.messageDirector.sendMessage([sender], 20100000, DBSERVER_GET_ESTATE_RESP, dg)
+            self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_GET_ESTATE_RESP, dg)
             return
             
         currentAvatar = self.manager.loadDatabaseObject(doId)
         
         # Somehow we don't have an account!
         if not 'setDISLid' in currentAvatar.fields:
-            dg.addUint8(1) # Failed to get our avatar, So we can't get their houses either!
-            self.messageDirector.sendMessage([sender], 20100000, DBSERVER_GET_ESTATE_RESP, dg)
+            dg.addUint8(1) # Avatar had invalid fields, So we can't get their houses.
+            self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_GET_ESTATE_RESP, dg)
             return
             
         accountId = currentAvatar.fields['setDISLid'][0]
         
         # Our account doesn't exist!?
         if not self.manager.hasDatabaseObject(accountId):
-            dg.addUint8(1) # Failed to get our avatar, So we can't get their houses either!
-            self.messageDirector.sendMessage([sender], 20100000, DBSERVER_GET_ESTATE_RESP, dg)
+            dg.addUint8(1) # Failed to get the account for our avatar, So we can't get their houses either!
+            self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_GET_ESTATE_RESP, dg)
             return
             
         account = self.manager.loadDatabaseObject(accountId)
         
         # Pre-define this here.
         estate = None
-        houseIds = None
+        houseIds = [0, 0, 0, 0, 0, 0]
         
         # We need to create an Estate!
         if not 'ESTATE_ID' in account.fields or account.fields['ESTATE_ID'] == 0:
             estate = self.manager.createDatabaseObjectFromName("DistributedEstate")
-            houseIds = [0, 0, 0, 0, 0, 0]
             account.update("ESTATE_ID", estate.doId)
             account.update("HOUSE_ID_SET", houseIds)
             if not estate.doId in self.stateServer.dbObjects:
@@ -550,7 +549,7 @@ class DatabaseServer:
             dg.addUint32(pet.doId)
         
         # We can FINALLY send our message.
-        self.messageDirector.sendMessage([sender], 20100000, DBSERVER_GET_ESTATE_RESP, dg)
+        self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_GET_ESTATE_RESP, dg)
 
     def makeFriends(self, sender, datagram):
         di = DatagramIterator(datagram)
@@ -574,7 +573,7 @@ class DatabaseServer:
             dg.addUint8(False)
             dg.addUint32(context)
             # Send out our response.
-            self.messageDirector.sendMessage([sender], 20100000, DBSERVER_MAKE_FRIENDS_RESP, dg)
+            self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_MAKE_FRIENDS_RESP, dg)
             return
             
         # Load the database objects for our friends.
@@ -586,7 +585,7 @@ class DatabaseServer:
             dg.addUint8(False)
             dg.addUint32(context)
             # Send out our response.
-            self.messageDirector.sendMessage([sender], 20100000, DBSERVER_MAKE_FRIENDS_RESP, dg)
+            self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_MAKE_FRIENDS_RESP, dg)
             return
             
         # Make sure we have the field already.
@@ -634,7 +633,7 @@ class DatabaseServer:
         dg.addUint8(True)
         dg.addUint32(context)
         
-        self.messageDirector.sendMessage([sender], 20100000, DBSERVER_MAKE_FRIENDS_RESP, dg)
+        self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_MAKE_FRIENDS_RESP, dg)
         
         # Save the database objects to make sure we don't lose our changes.
         self.manager.saveDatabaseObject(friendA)
@@ -688,7 +687,7 @@ class DatabaseServer:
         dg.addString(secret)
         dg.addUint32(requesterId)
 
-        self.messageDirector.sendMessage([sender], 20100000, DBSERVER_REQUEST_SECRET_RESP, dg)
+        self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_REQUEST_SECRET_RESP, dg)
         
     def submitSecret(self, sender, datagram):
         di = DatagramIterator(datagram)
@@ -737,4 +736,4 @@ class DatabaseServer:
         dg.addUint32(requesterId)
         dg.addUint32(avId)
 
-        self.messageDirector.sendMessage([sender], 20100000, DBSERVER_SUBMIT_SECRET_RESP, dg)
+        self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_SUBMIT_SECRET_RESP, dg)

@@ -63,10 +63,12 @@ class MDClient:
             if code == CONTROL_SET_CHANNEL:
                 channel = di.getUint64()
                 self.channels.add(channel)
+                #print("Registered channel %d for %s:%d" % (channel, self.addr[0], self.addr[1]))
                 
             elif code == CONTROL_REMOVE_CHANNEL:
                 channel = di.getUint64()
                 self.channels.remove(channel)
+                #print("Unregistered channel %d for %s:%d" % (channel, self.addr[0], self.addr[1]))
                 
             elif code == CONTROL_ADD_POST_REMOVE:
                 message = di.getBlob()
@@ -81,7 +83,7 @@ class MDClient:
             else:
                 raise NotImplementedError("CONTROL_MESSAGE", code)
             
-            print(self.connectionNames[0], self.channels)
+            print(self.connectionNames[0], self.connectionURLs, self.channels)
             
         else:
             sender = di.getUint64()
