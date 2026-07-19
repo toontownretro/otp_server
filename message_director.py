@@ -19,14 +19,36 @@ class MDClient(Client):
         self.connection_names = []
         self.connection_urls = []
         self.channels = set()
-        self.post_remove = []
+        self.post_removes = []
         self.route_messages = []
         
     async def close(self):
-        await self.handle_lost_connection()
+        if self.closed:
+            return
+
+        # Try to handle any post remove datagrams.
+        await self.handle_post_removes()
+        
+        # Close our connection.
         await super().close()
         
+        # Cleanup all of our stored data and reset it,
+        # The exception is route messages as the Message Director
+        # will clear those out.
+        
+        del self.connection_names
+        self.connection_names = []
+        del self.connection_urls
+        self.connection_urls = []
+        del self.channels
+        self.channels = set()
+        del self.post_removes
+        self.post_removes = []
+        
     async def handle_message(self, di):
+        if self.closed:
+            return
+
         code = di.getUint16()
         
         if code == CONTROL_SET_CHANNEL:
@@ -39,9 +61,34 @@ class MDClient(Client):
             self.channels.remove(channel)
             #print("Unregistered channel %d for %s:%d" % (channel, self.addr[0], self.addr[1]))
             
+        # This is just a guess of what this control code actually did, We don't know in truth.
+        # It could've also added all of the channels in-between a range of two channels. But I don't see any good reason
+        # to do it that way.
+        # It may of also been used for districts? (Doubt) But Toontown doesn't use this. And if Pirates did. Then we won't
+        # know how unless Pirates leaks.
+        elif code == CONTROL_ADD_RANGE:
+            count = di.getInt16()
+            if count <= 0 or not di.getRemainingSize() >= count * 8:
+                return
+
+            for _ in range(count):
+                self.channels.add(di.getUint64())
+                
+        # See CONTROL_ADD_RANGE.
+        elif code == CONTROL_REMOVE_RANGE:
+            count = di.getInt16()
+            if count <= 0 or not di.getRemainingSize() >= count * 8:
+                return
+
+            for _ in range(count):
+                self.channels.remove(di.getUint64())
+            
         elif code == CONTROL_ADD_POST_REMOVE:
             message = di.getBlob()
-            self.post_remove.append(message)
+            self.post_removes.append(message)
+            
+        elif code == CONTROL_CLEAR_POST_REMOVE:
+            self.post_removes = []
             
         elif code == CONTROL_SET_CON_NAME:
             self.connection_names.append(di.getString())
@@ -71,7 +118,10 @@ class MDClient(Client):
         self.route_messages.append(message)
         
     async def send_message(self, message):
-        if not message: return
+        if self.closed:
+            return
+        if not message: 
+            return
         
         # Make sure the message we recieved from the Message Director is
         # something we care about.
@@ -100,7 +150,7 @@ class MDClient(Client):
             
         # Get the amount of channels the datagram will be sent to.
         count = di.getUint8()
-        if count <= 0:
+        if count <= 0 or not di.getRemainingSize() >= count * 8:
             #print("Recieved datagram has invalid amount of channels!")
             return
         
@@ -124,8 +174,8 @@ class MDClient(Client):
         # Add the datagram to the routing wait list. The Message Director will pick them up and pass them along.
         await self.route_message(channels, di)
         
-    async def handle_lost_connection(self):
-        for x in self.post_remove:
+    async def handle_post_removes(self):
+        for x in self.post_removes:
             await self.receive_datagram(Datagram(x))
         
     def is_uberdog(self):
@@ -134,6 +184,8 @@ class MDClient(Client):
         return self.connection_names[0] == "UberDog"
         
     def get_primary_channel(self):
+        if len(self.channels) <= 0:
+            return 0
         return list(self.channels)[0]
 
 class MessageDirector(Server):

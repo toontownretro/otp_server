@@ -1577,7 +1577,6 @@ class Client:
         dg.appendData(datagram.getMessage())
         self.sendDatagram(dg)
 
-
     def sendDatagram(self, dg):
         """
         Send a datagram

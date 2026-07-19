@@ -25,13 +25,19 @@ class Client:
         
     async def connect(self, addr, port):
         if not self.closed:
-            return
+            return True # Already connected.
 
         self.reader, self.writer = await asyncio.open_connection(addr, port)
-        if self.reader and self.writer:
-            self.closed = False
+        if not self.reader or not self.writer:
+            return False # Failed to connect.
+            
+        self.closed = False
+        return True # Connected successfully.
         
     async def close(self):
+        if self.closed:
+            return
+            
         if self.writer:
             self.writer.close()
             await self.writer.wait_closed()
@@ -90,7 +96,7 @@ class Client:
         await self.send_data(bytes(buffer))
         
     async def handle_lost_connection(self):
-        return
+        await self.close()
         
     def is_closed(self):
         return self.closed
@@ -111,14 +117,29 @@ class Server:
         self.server = None
         self.clients = []
         
+        self.server_closed = True
+        
     @classmethod
     async def initialize(cls, addr, port):
+        if not self.server_closed:
+            return
+
         self = cls(addr, port)
-        self.server = await asyncio.start_server(self.handle_client, self.addr, self.port)
-        await self.server.start_serving()
+        await self.start()
         return self
         
+    async def start(self):
+        if not self.server_closed:
+            return
+            
+        self.server = await asyncio.start_server(self.handle_client, self.addr, self.port)
+        await self.server.start_serving()
+        self.server_closed = False
+        
     async def close(self):
+        if self.server_closed:
+            return
+
         if self.server:
             self.server.close()
             await self.server.wait_closed()
@@ -137,6 +158,8 @@ class Server:
         
         del self.clients
         self.clients = []
+        
+        self.server_closed = True
 
     async def handle_client(self, reader, writer):
         client = await self.client_cls.from_server(reader, writer)
@@ -146,10 +169,12 @@ class Server:
         print("Dropping client from %s!" % (str(client.get_address())))
         
         # Handle the connection being lost.
+        # The client will close itself on a lost connection.
         await client.handle_lost_connection()
         
-        # Close the connection for the client.
-        await client.close()
+        # We still do want to force it closed just in case though.
+        if not client.is_closed():
+            await client.close()
         
     async def flush_client(self, client):
         try:

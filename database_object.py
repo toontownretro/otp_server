@@ -147,8 +147,7 @@ class DatabaseObject:
         
         # This isn't very optimized, but we wanna make sure we don't lose anything
         self.dbm.saveDatabaseObject(self)
-        
-        
+
     def update(self, field, *values):
         # "Manual" update
         field = self.dclass.getFieldByName(field)

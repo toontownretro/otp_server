@@ -1,41 +1,133 @@
-import os, socket, select, ssl, time
+import asyncio, functools, socket, ssl, struct, time
 
-from panda3d.core import ConfigVariableString, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
+from panda3d.core import ConfigVariableInt, ConfigVariableBool, Datagram, DatagramIterator
 
-from dnaparser import loadDNAFile, DNAStorage
+from central_logger import CentralLogger
+from connection import Server
+from client import Client
+from distributed_object import DistributedObject
+from distributed_directory import DistributedDirectory
+from server_interface import ServerInterface
 from msgtypes import *
 
-class ClientAgent:
-    def __init__(self, otp):
-        # Main OTP
-        self.otp = otp
+class ClientAgent(ServerInterface, Server):
+    client_cls = Client
+    
+    def __init__(self, addr="0.0.0.0", port=6667, channel=ConfigVariableInt("client-agent-id", 20200000).getValue()):
+        ServerInterface.__init__(self)
+        Server.__init__(self, addr, port)
         
-        # DC File
-        self.dc = self.otp.dc
-        
-        # GameServer Sock
-        sock = socket.socket()
-        sock.bind(("0.0.0.0", 6667))
-        sock.listen(5)
+        self.channel = channel
         
         # SSL Context
         #context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         #context.load_cert_chain('secure/server.cert', 'secure/server.key')
-
-        # GameServer sock and clients
-        self.sock = sock #context.wrap_socket(sock, server_side=True)
-        self.clients = []
         
         self.visgroups = {}
             
-        self.nameDictionary = {}
-                
+        self.name_dictionary = {}
+        
+        self.load_dc()
+        self.load_dna()
+        self.load_namemaster()
+        
         # Special fields IDs (cache)
         self.setTalkFieldId = self.dc.getClassByName("TalkPath_owner").getFieldByName("setTalk").getNumber()
         
-        self.readFiles()
+    @classmethod
+    async def initialize(cls, addr, port, channel):
+        return cls(addr, port, channel)
         
-    def readFiles(self):
+    async def connect(self, addr, port):
+        connected = await ServerInterface.connect(self, addr, port)
+        
+        # Failed to connect to the Message Director!
+        if not connected:
+            return False
+            
+        # Setup our information on the Message Director.
+        self.channel = channel
+        await self.register_for_channel(self.channel)
+        await self.register_for_channel(CLIENTAGENT_ID)
+        await self.set_connection_name("ClientAgent")
+        return True
+        
+    async def close_interface(self):
+        # Close our connection.
+        await ServerInterface.close(self)
+        
+    async def close_server(self):
+        # Close our server.
+        await Server.close(self)
+        
+    async def close(self):
+        await self.close_interface()
+        await self.close_server()
+
+    async def receive_datagram(self, dg):
+        di = DatagramIterator(dg)
+        
+        # First check if the datagram has anything in it.
+        if not di.getRemainingSize() >= 1:
+            return
+            
+        # Get the amount of channels the datagram wants to be routed too.
+        count = di.getUint8()
+        if count <= 0:
+            return
+            
+        # Extract all of the channels from the datagram.
+        if not di.getRemainingSize() >= 8 * count:
+            return
+        channels = set()
+        for _ in range(count):
+            channels.add(di.getUint64())
+            
+        # Get the sender for the datagram and it's 'code' (Identifier for what type of datagram it is)
+        if not di.getRemainingSize() >= 10:
+            return
+        sender = di.getUint64()
+        code = di.getUint16()
+        
+        # Extract all of the remaining data into it's own datagram.
+        data = di.getRemainingBytes()
+        dg = Datagram(bytes(data))
+        
+        # Check if our channel is inside.
+        if self.channel in channels or CLIENTAGENT_ID in channels:
+            di = DatagramIterator(dg)
+            await self.handle_internal_channel(sender, code, di)
+                
+        # Otherwise, We'll distribute the channel check for each client indivdually.
+        args = []
+        for client in self.clients:
+            args.append((client, channels, sender, code, dg))
+        
+        await asyncio.gather(*map(self.handle_datagram_for_client, args))
+        
+    async def handle_datagram_for_client(self, client, channels, sender, code, datagram):
+        if client.avatarId is None:
+            return
+        if not client.avatarId + (1 << 32) in channels:
+            return
+
+        if code == STATESERVER_OBJECT_UPDATE_FIELD:
+            await client.send_message(channels, sender, CLIENT_OBJECT_UPDATE_FIELD, datagram)
+        elif code == CLIENT_SET_FIELD_SENDABLE:
+            dgi = DatagramIterator(datagram)
+            doId = dgi.getUint32()
+            
+            # We do it like this because we don't add a size check.
+            fields = []
+            while dgi.getRemainingSize() >= 2:
+                fields.append(dgi.getUint16())
+            
+            # Set the clsend fields for object in our client.
+            await client.set_clsend_fields(doId, fields)
+        else:
+            print("Unexpected message on Puppet channel %d (code %d)" % (client.avatarId + (1 << 32), code))
+        
+    def load_dna(self):
         # Get our Panda3D Virtual File System.
         vfs = VirtualFileSystem.getGlobalPtr()
         
@@ -43,9 +135,6 @@ class ClientAgent:
         searchPath = DSearchPath()
         
         # In other environments, including the dev environment, look here:
-        toontownPath = os.path.expandvars('$TOONTOWN') or './toontown'
-        searchPath.appendDirectory(Filename.fromOsSpecific(os.path.expandvars(toontownPath + '/src/configfiles')))
-        
         ttmodelsPath = os.path.expandvars('$TTMODELS') or './ttmodels'
         searchPath.appendDirectory(Filename.fromOsSpecific(os.path.expandvars(ttmodelsPath + '/src/dna')))
         
@@ -96,25 +185,36 @@ class ClientAgent:
         for visgroup in dnaStore.visGroups:
             self.visgroups[int(visgroup.name)] = [int(i) for i in visgroup.visibles]
             
+    def load_namemaster(self):
         # Let's read our NameMaster
+        
+        # Get our Panda3D Virtual File System.
+        vfs = VirtualFileSystem.getGlobalPtr()
+        
+        # Look for our file locations and read them in.
+        searchPath = DSearchPath()
+        
+        # In other environments, including the dev environment, look here:
+        toontownPath = os.path.expandvars('$TOONTOWN') or './toontown'
+        searchPath.appendDirectory(Filename.fromOsSpecific(os.path.expandvars(toontownPath + '/src/configfiles')))
         
         # Check which language should be used, defaults to English
         # Perhaps look for product code instead of language?
         language = ConfigVariableString("language", "english").getValue()
         
-        self.NameMaster = "NameMasterEnglish.txt"
+        name_master = "NameMasterEnglish.txt"
         if language == 'castillian':
-            self.NameMaster = "NameMaster_castillian.txt"
+            name_master = "NameMaster_castillian.txt"
         elif language == "japanese":
-            self.NameMaster = "NameMaster_japanese.txt"
+            name_master = "NameMaster_japanese.txt"
         elif language == "german":
-            self.NameMaster = "NameMaster_german.txt"
+            name_master = "NameMaster_german.txt"
         elif language == "french":
-            self.NameMaster = "NameMaster_french.txt"
+            name_master = "NameMaster_french.txt"
         elif language == "portuguese":
-            self.NameMaster = "NameMaster_portuguese.txt"
+            name_master = "NameMaster_portuguese.txt"
             
-        filepath = Filename(self.NameMaster)
+        filepath = Filename(name_master)
         vfs.resolveFilename(filepath, searchPath)
 
         with open(filepath, "r") as file:
@@ -123,152 +223,4 @@ class ClientAgent:
                     continue
                     
                 nameId, nameCategory, name = line.split("*", 2)
-                self.nameDictionary[int(nameId)] = (int(nameCategory), name.strip())
-            
-    def announceCreate(self, do, sender):
-        # We send to the interested clients that they have access to a brand new object!
-        dg = Datagram()
-        dg.addUint32(do.parentId)
-        dg.addUint32(do.zoneId)
-        dg.addUint16(do.dclass.getNumber())
-        dg.addUint32(do.doId)
-        do.packRequiredBroadcast(dg)
-        do.packOther(dg)
-        
-        for client in self.clients:
-            # No echo pls
-            if client.avatarId == sender:
-                continue
-                
-            # We send the object creation if we're the owner or if we're interested.
-            if client.hasInterest(do.parentId, do.zoneId) or do.doId == client.avatarId:
-                client.sendMessage(CLIENT_CREATE_OBJECT_REQUIRED_OTHER, dg)
-        
-        
-    def announceDelete(self, do, sender):
-        # We're deleting an object
-        dg = Datagram()
-        dg.addUint32(do.doId)
-        
-        for client in self.clients:
-            # Not retransmitting
-            if client.avatarId == sender:
-                continue
-                
-            # If the client is the owner, we're in a special case and we're not sending the packet
-            if do.doId == client.avatarId:
-                client.onAvatarDelete()
-            
-            # We tell the client that it's disabled only if they're interested or the owner.
-            # (Please note this last condition here is useless but it's meant to be replaced if owner view is implemented some day)
-            elif client.hasInterest(do.parentId, do.zoneId) or do.doId == client.avatarId:
-                client.sendMessage(CLIENT_OBJECT_DISABLE, dg)
-        
-        
-    def announceMove(self, do, prevParentId, prevZoneId, sender):
-        """
-        Send CLIENT_OBJECT_LOCATION to interested clients,
-        or CLIENT_OBJECT_DISABLE / CLIENT_CREATE_OBJECT_REQUIRED_OTHER
-        """
-        # Disable Message
-        dg1 = Datagram()
-        dg1.addUint32(do.doId)
-        
-        # Location Message
-        dg2 = Datagram()
-        dg2.addUint32(do.doId)
-        dg2.addUint32(do.parentId)
-        dg2.addUint32(do.zoneId)
-        
-        # Create Object Message
-        dg3 = Datagram()
-        dg3.addUint32(do.parentId)
-        dg3.addUint32(do.zoneId)
-        dg3.addUint16(do.dclass.getNumber())
-        dg3.addUint32(do.doId)
-        do.packRequiredBroadcast(dg3)
-        do.packOther(dg3)
-        
-        for client in self.clients:
-            # We are not transmitting back our own updates
-            if client.avatarId == sender:
-                continue
-                
-            # If we're the owner, we must receive it in any case
-            if client.avatarId == do.doId:
-                client.sendMessage(CLIENT_OBJECT_LOCATION, dg2)
-                
-            # If we're interested in the previous area
-            elif client.hasInterest(prevParentId, prevZoneId):
-                # If we're interested in the new area,
-                # we can just tell the client that the object moved
-                if client.hasInterest(do.parentId, do.zoneId):
-                    client.sendMessage(CLIENT_OBJECT_LOCATION, dg2)
-                else:   
-                    # If we're not, we ask them to disable the object
-                    client.sendMessage(CLIENT_OBJECT_DISABLE, dg1)
-                    
-            # If we're only interested in the new area,
-            # we ask them to create the object
-            elif client.hasInterest(do.parentId, do.zoneId):
-                client.sendMessage(CLIENT_CREATE_OBJECT_REQUIRED_OTHER, dg3)
-                
-                
-    def announceUpdate(self, do, field, data, sender):
-        """
-        Send CLIENT_OBJECT_UPDATE_FIELD to interested clients
-        """
-        # This field has no reason to be transmitted if it's not ownrecv or broadcast
-        if not (field.isOwnrecv() or field.isBroadcast()):
-            return
-            
-        # We generate the field update
-        dg = Datagram()
-        dg.addUint32(do.doId)
-        dg.addUint16(field.getNumber())
-        dg.appendData(data)
-        
-        for client in self.clients:
-            # We are not transmitting back our own updates
-            if client.avatarId == sender:
-                continue
-                
-            # Can this client receive this update?
-            # TODO: is broadcast check required?
-            if (field.isOwnrecv() or not field.isBroadcast()) and client.avatarId != do.doId:
-                continue
-                
-            # If we're interested OR owner, we send the update
-            if client.hasInterest(do.parentId, do.zoneId) or client.avatarId == do.doId:
-                client.sendMessage(CLIENT_OBJECT_UPDATE_FIELD, dg)
-                
-        
-    def handle(self, channels, sender, code, datagram):
-        """
-        Handle a message
-        """
-        for channel in channels:
-            for client in self.clients:
-                if client.avatarId is None:
-                    continue
-                    
-                if channel == client.avatarId + (1 << 32):
-                    if code == STATESERVER_OBJECT_UPDATE_FIELD:
-                        client.sendMessage(CLIENT_OBJECT_UPDATE_FIELD, datagram)
-                    elif code == CLIENT_SET_FIELD_SENDABLE:
-                        print("Recieved messsage type CLIENT_SET_FIELD_SENDABLE.")
-                        
-                        dgi = DatagramIterator(datagram)
-                        
-                        doId = dgi.getUint32()
-                        
-                        fields = []
-                        
-                        # We do it like this because we don't add a size check.
-                        while dgi.getRemainingSize() >= 2:
-                            fields.append(dgi.getUint16())
-                        
-                        # Set the clsend fields for object in our client.
-                        client.setClsendFields(doId, fields)
-                    else:
-                        raise Exception("Unexpected message on Puppet channel (code %d)" % code)
+                self.name_dictionary[int(nameId)] = (int(nameCategory), name.strip())
