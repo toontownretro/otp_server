@@ -238,18 +238,29 @@ class StateServer(ServerInterface):
                 do.receiveOther(di)
                 
             # We announce the object was created if it was not created by the owner.
-            channels = [CLIENTAGENT_ID] # We announce to clients too, The ClientAgent will manage how.
-            channels.append(self.get_interested(do, sender))
+            channels = self.get_interested(do, sender))
+            if channels:
+                dg = Datagram()
+                dg.addUint32(do.parentId)
+                dg.addUint32(do.zoneId)
+                dg.addUint16(do.dclass.getNumber())
+                dg.addUint32(do.doId)
+                do.packRequired(dg)
+                do.packOther(dg) # TODO Should we check for airecv?
             
+                await self.send_message(channels, sender, STATESERVER_OBJECT_ENTERZONE_WITH_REQUIRED_OTHER, dg)
+                
+            # We announce to clients too, The ClientAgent will manage how.
             dg = Datagram()
             dg.addUint32(do.parentId)
             dg.addUint32(do.zoneId)
             dg.addUint16(do.dclass.getNumber())
             dg.addUint32(do.doId)
             do.packRequired(dg)
-            do.packOther(dg) # TODO Should we check for airecv?
+            if code == STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER:
+                do.packOther(dg)
             
-            await self.send_message(channels, sender, STATESERVER_OBJECT_ENTERZONE_WITH_REQUIRED_OTHER, dg)
+           await self.send_message([CLIENTAGENT_ID], sender, code, dg)
             
         elif code == STATESERVER_OBJECT_UPDATE_FIELD:
             # We are asked to update an object field.
@@ -416,21 +427,30 @@ class StateServer(ServerInterface):
             if code == STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER:
                 do.receiveOther(di)
                 
-            # We announce to clients too, The ClientAgent will manage how.
-            channels = [CLIENTAGENT_ID]
-                
             # We announce the object was created if it was not created by the owner.
-            channels.append(self.get_interested(do, sender))
+            channels = self.get_interested(do, sender))
+            if channels:
+                dg = Datagram()
+                dg.addUint32(do.parentId)
+                dg.addUint32(do.zoneId)
+                dg.addUint16(do.dclass.getNumber())
+                dg.addUint32(do.doId)
+                do.packRequired(dg)
+                do.packOther(dg) # TODO Should we check for airecv?
             
+                await self.send_message(channels, sender, STATESERVER_OBJECT_ENTERZONE_WITH_REQUIRED_OTHER, dg)
+                
+            # We announce to clients too, The ClientAgent will manage how.
             dg = Datagram()
             dg.addUint32(do.parentId)
             dg.addUint32(do.zoneId)
             dg.addUint16(do.dclass.getNumber())
             dg.addUint32(do.doId)
             do.packRequired(dg)
-            do.packOther(dg) # TODO Should we check for airecv?
+            if code == STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER:
+                do.packOther(dg)
             
-            await self.send_message(channels, sender, STATESERVER_OBJECT_ENTERZONE_WITH_REQUIRED_OTHER, dg)
+           await self.send_message([CLIENTAGENT_ID], sender, code, dg)
 
         elif code == STATESERVER_OBJECT_DELETE_RAM:
             # We are asked to delete an object.
@@ -583,8 +603,8 @@ class StateServer(ServerInterface):
             # We announce to clients too, The ClientAgent will manage how.
             dg = Datagram()
             dg.addUint32(do.doId)
-            dg.addUint32(prevParentId)
-            dg.addUint32(prevZoneId)
+            dg.addUint32(do.parentId)
+            dg.addUint32(do.zoneId)
             
             await self.send_message([CLIENTAGENT_ID], sender, STATESERVER_OBJECT_SET_ZONE, dg)
         else:

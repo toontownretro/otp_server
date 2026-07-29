@@ -18,9 +18,37 @@ class DistributedObject:
             field = self.dclass.getInheritedField(index)
             if (field.isRequired() or field.isRam()) and field.asAtomicField():
                 self.fields[field.getNumber()] = None
+                
+    def get(self, field, default=None)
+        field = self.dclass.getFieldByName(field)
+        if not field:
+            return None
+        return self.fields.get(field.getNumber(), default)
 
     def update(self, field, *values):
         self.fields[self.dclass.getFieldByName(field).getNumber()] = values
+        
+    def packDetails(self, dg, fields):
+        # Pack required fields.
+        fieldPacker = DCPacker()
+        for i in range(self.dclass.getNumInheritedFields()):
+            field = self.dclass.getInheritedField(i)
+            if not field.isRequired() or field.asMolecularField():
+                continue
+
+            k = field.getName()
+            v = fields.get(k, None)
+
+            fieldPacker.beginPack(field)
+            if not v:
+                fieldPacker.packDefaultValue()
+            else:
+                field.packArgs(fieldPacker, v)
+
+            fieldPacker.endPack()
+
+        dg.appendData(fieldPacker.getBytes())
+        return dg
         
     def packField(self, dg, field):
         packer = DCPacker()
@@ -33,18 +61,23 @@ class DistributedObject:
             
         packer.endPack()
         dg.appendData(packer.getBytes())
+        return dg
 
     def packRequired(self, dg):
         for index in range(self.dclass.getNumInheritedFields()):
             field = self.dclass.getInheritedField(index)
             if field.isRequired() and field.asAtomicField():
                 self.packField(dg, field)
+                
+        return dg
 
     def packRequiredBroadcast(self, dg):
         for index in range(self.dclass.getNumInheritedFields()):
             field = self.dclass.getInheritedField(index)
             if (field.isRequired() and field.isBroadcast()) and field.asAtomicField():
                 self.packField(dg, field)
+
+        return dg
 
     def packOther(self, dg):
         dg2 = Datagram()
@@ -60,7 +93,7 @@ class DistributedObject:
                 
         dg.addUint16(count)
         dg.appendData(dg2.getMessage())
-        
+        return dg
         
     def receiveField(self, field, di):
         packer = DCPacker()

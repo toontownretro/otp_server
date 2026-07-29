@@ -123,7 +123,7 @@ class MDClient(Client):
         if not message: 
             return
         
-        # Make sure the message we recieved from the Message Director is
+        # Make sure the message we received from the Message Director is
         # something we care about.
         if not self.channels.intersection(message.channels):
             return
@@ -145,13 +145,13 @@ class MDClient(Client):
         
         # First check if the datagram has anything in it.
         if not di.getRemainingSize() >= 1:
-            #print("Recieved Datagram was truncated!")
+            #print("Received Datagram was truncated!")
             return
             
         # Get the amount of channels the datagram will be sent to.
         count = di.getUint8()
         if count <= 0 or not di.getRemainingSize() >= count * 8:
-            #print("Recieved datagram has invalid amount of channels!")
+            #print("Received datagram has invalid amount of channels!")
             return
         
         # Get the channels we will send the datagram to.
@@ -161,7 +161,7 @@ class MDClient(Client):
             # We can't have a size less then 8, Because that's how big
             # a 64 bit integer is at minimum.
             if not di.getRemainingSize() >= 8:
-                #print("Recieved Datagram was truncated!")
+                #print("Received Datagram was truncated!")
                 return
             channel = di.getUint64()
             channels.add(channel)

@@ -31,6 +31,13 @@ class ClientAgent(ServerInterface, Server):
         self.load_dna()
         self.load_namemaster()
         
+        # These are a local reflection of the objects on the Stateserver,
+        # We can only see what the Stateserver shares.
+        # We also store objects we only need to have for our clients here too.
+        self.objects = {}
+        
+        self.__context = 0
+        
         # Special fields IDs (cache)
         self.setTalkFieldId = self.dc.getClassByName("TalkPath_owner").getFieldByName("setTalk").getNumber()
         
@@ -63,6 +70,10 @@ class ClientAgent(ServerInterface, Server):
     async def close(self):
         await self.close_interface()
         await self.close_server()
+        
+    async def handle_client(self, reader, writer):
+        client = await self.client_cls.from_server(self, reader, writer)
+        self.clients.append(client)
 
     async def receive_datagram(self, dg):
         di = DatagramIterator(dg)
@@ -95,8 +106,7 @@ class ClientAgent(ServerInterface, Server):
         
         # Check if our channel is inside.
         if self.channel in channels or CLIENTAGENT_ID in channels:
-            di = DatagramIterator(dg)
-            await self.handle_internal_channel(sender, code, di)
+            await self.handle_internal_channel(sender, code, dg)
                 
         # Otherwise, We'll distribute the channel check for each client indivdually.
         args = []
@@ -105,22 +115,182 @@ class ClientAgent(ServerInterface, Server):
         
         await asyncio.gather(*map(self.handle_datagram_for_client, args))
         
+    async def handle_internal_channel(self, sender, code, dg):
+        di = DatagramIterator(dg)
+        
+        if code in (STATESERVER_OBJECT_GENERATE_WITH_REQUIRED, STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER):
+            parentId = di.getUint32()
+            zoneId = di.getUint32()
+            classId = di.getUint16()
+            doId = di.getUint32()
+            
+            if not doId in self.objects:
+                # We get the dclass
+                dclass = self.dc.getClass(classId)
+                
+                # We create the object
+                do = DistributedObject(doId, dclass, parentId, zoneId)
+                do.senders.append(sender)
+                
+                # We save the object
+                self.objects[doId] = do
+            else:
+                do = self.objects[doId]
+                do.parentId = parentId
+                do.zoneId = zoneId
+                do.senders.append(sender)
+
+            # We update the object
+            do.receiveRequired(di)
+            if code == STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER:
+                do.receiveOther(di)
+            
+            # Prepare a list of partial coroutines for the clients.
+            routines = [
+                functools.partial(client.receive_create, do, sender, code == STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER)
+                for client in self.clients  
+            ]
+            coroutines = [f() for f in routines]
+        
+            # Have all of our clients recieve our create for the object.
+            await asyncio.gather(*coroutines)
+            
+        elif code == STATESERVER_OBJECT_DELETE_RAM:
+            # We are asked to delete an object.
+            
+            doId = di.getUint32()
+            
+            if not doId in self.objects:
+                return
+
+            do = self.objects[doId]
+            
+            # Prepare a list of partial coroutines for the clients.
+            routines = [
+                functools.partial(client.receive_delete, do, sender)
+                for client in self.clients  
+            ]
+            coroutines = [f() for f in routines]
+            
+            # Have all of our clients recieve our delete for the object.
+            await asyncio.gather(*coroutines)
+            
+            # Remove the object from our dict.
+            del self.objects[doId]
+            
+        elif code == STATESERVER_OBJECT_SET_ZONE:
+            # We are asked to move an object.
+            
+            doId = di.getUint32()
+
+            if not doId in self.objects:
+                return
+
+            parentId = di.getUint32()
+            zoneId = di.getUint32()
+                
+            do = self.objects[doId]
+            
+            # We get the previous zone
+            prevParentId, prevZoneId = do.parentId, do.zoneId
+            
+            # We set the new zone
+            do.parentId = parentId
+            do.zoneId = zoneId
+            
+            # Prepare a list of partial coroutines for the clients.
+            routines = [
+                functools.partial(client.receive_move, do, prevParentId, prevZoneId, sender)
+                for client in self.clients
+            ]
+            coroutines = [f() for f in routines]
+        
+            # Have all of our clients recieve our move for the object.
+            await asyncio.gather(*coroutines)
+            
+        elif code == STATESERVER_OBJECT_UPDATE_FIELD:
+            # We are asked to update an object.
+            
+            doId = di.getUint32()
+            
+            if not doId in self.objects:
+                return
+            
+            do = self.objects[doId]
+            
+            # Now let's update our object field.
+            fieldId = di.getUint16()
+            
+            # The remaining data is field data
+            data = di.getRemainingBytes()
+            
+            # We apply the update
+            field = do.dclass.getFieldByIndex(fieldId)
+            
+            # Receieve the update onto the object.
+            do.receiveField(field, di)
+            
+            # Prepare a list of partial coroutines for the clients.
+            routines = [
+                functools.partial(client.receive_update, do, field, data, sender)
+                for client in self.clients
+            ]
+            coroutines = [f() for f in routines]
+        
+            # Have all of our clients recieve our update for the object.
+            await asyncio.gather(*coroutines)
+            
+        else:
+            print("Unexpected message on internal channels (code %d)" % (code))
+        
     async def handle_datagram_for_client(self, client, channels, sender, code, datagram):
-        if client.avatarId is None:
+        # If we have no avatar and this isn't from the DB server? Not for us.
+        if client.avatarId == 0 and not sender == DBSERVER_ID:
             return
-        if not client.avatarId + (1 << 32) in channels:
+            
+        if code == DBSERVER_GET_STORED_VALUES_RESP:
+            di = DatagramIterator(datagram)
+            
+            # Malformed response.
+            if di.getRemainingSize() <= 4:
+                return
+            
+            # Make sure we have a callback ready, If not. We can be assured this isn't for this client.
+            context = di.getUint32()
+            if not context in client.db_callbacks:
+                return
+            
+            await client.receive_database_request_object_resp(context, di)
+            return
+        elif code == DBSERVER_CREATE_STORED_OBJECT_RESP:
+            di = DatagramIterator(datagram)
+            
+            # Malformed response.
+            if di.getRemainingSize() <= 4:
+                return
+            
+            # Make sure we have a callback ready, If not. We can be assured this isn't for this client.
+            context = di.getUint32()
+            if not context in client.db_callbacks:
+                return
+
+            await client.receive_database_create_object_resp(context, di)
+            return
+        
+        # If we have no avatar or it's not for our avatar, Not a message for us.
+        if client.avatarId == 0 or not client.avatarId + (1 << 32) in channels:
             return
 
         if code == STATESERVER_OBJECT_UPDATE_FIELD:
             await client.send_message(channels, sender, CLIENT_OBJECT_UPDATE_FIELD, datagram)
         elif code == CLIENT_SET_FIELD_SENDABLE:
-            dgi = DatagramIterator(datagram)
+            di = DatagramIterator(datagram)
             doId = dgi.getUint32()
             
             # We do it like this because we don't add a size check.
             fields = []
-            while dgi.getRemainingSize() >= 2:
-                fields.append(dgi.getUint16())
+            while di.getRemainingSize() >= 2:
+                fields.append(di.getUint16())
             
             # Set the clsend fields for object in our client.
             await client.set_clsend_fields(doId, fields)
@@ -224,3 +394,9 @@ class ClientAgent(ServerInterface, Server):
                     
                 nameId, nameCategory, name = line.split("*", 2)
                 self.name_dictionary[int(nameId)] = (int(nameCategory), name.strip())
+                
+    async def allocate_context(self):
+        self.__context += 1
+        if self.__context >= (1 << 32):
+            self.__context = 0
+        return self.__context

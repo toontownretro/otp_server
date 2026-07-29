@@ -99,7 +99,7 @@ class ServerInterface(Client):
         if self.closed:
             return
             
-        # Construct our datagram which the Message Director will recieve.
+        # Construct our datagram which the Message Director will receive.
         dg = Datagram()
         dg.addUint8(len(channels))
         for channel in channels:

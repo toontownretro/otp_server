@@ -283,8 +283,8 @@ class DatabaseServer:
         # Get the context.
         context = di.getUint32()
         
-        # We just need to do this for this unused value.
-        u = di.getString()
+        # This is the database object class, It's used if we don't have a ID.
+        dbObjectTypeStr = di.getString()
         
         # This is our database object ID.
         dbObjectType = di.getUint16()
