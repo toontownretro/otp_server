@@ -1,4 +1,4 @@
-import asyncio, functools, socket, struct
+import asyncio, functools, math, socket, struct, time, traceback
 
 from panda3d.core import ConfigVariableInt, Datagram, DatagramIterator
 
@@ -22,9 +22,21 @@ class MDClient(Client):
         self.post_removes = []
         self.route_messages = []
         
+        self.timeout_period = 30
+        
+        self.ping_task = None
+        self.ping_delta = 0.0
+        self.name = None
+        
     async def close(self):
         if self.closed:
             return
+            
+        # Clear our ping task if it exists.
+        if self.ping_task:
+            self.ping_task.cancel()
+        self.ping_task = None
+        self.ping_delta = 0.0
 
         # Try to handle any post remove datagrams.
         await self.handle_post_removes()
@@ -48,18 +60,91 @@ class MDClient(Client):
     async def handle_message(self, di):
         if self.closed:
             return
+            
+        sender = di.getUint64()
+        code = di.getUint16()
+        
+        if code == SERVER_PING:
+            if sender != self.get_primary_channel():
+                print(f"[{self.get_name()}]: Received ping message from channel {sender} not meant for us ({self.get_primary_channel()}).")
+                return
+                
+            now = time.time()
+                
+            # Deconstruct ping message.
+            sec = di.getUint32()
+            usec = di.getUint32()
+            url = di.getString()
+            channel = di.getUint32()
+            
+            pingTime = sec + usec / 1000000.0
+            delta = now - pingTime
+            
+            # Allow up to double of our timeout period for a extra leniency
+            # with clients that are trying to ping.
+            if delta > self.ping_delta and self.ping_delta <= self.timeout_period:
+                self.ping_delta = delta
+            
+            print(f"[{self.get_name()}]: Received ping with delay of approximately {round(delta, 4)} seconds.")
+            
+            # Clear our timeout task if we have it.
+            if self.timeout_task:
+                self.timeout_task.cancel()
+                self.timeout_task = None
+                
+            # Schedule our next server ping by creating a new ping task.
+            self.ping_task = asyncio.create_task(self.schedule_ping())
+            return
+        
+        addr = self.get_address()
+        print(f"[{self.get_name()}]: Received unsupported code '{code}' for a message.")
+        
+    async def handle_control_message(self, di):
+        if self.closed:
+            return
 
         code = di.getUint16()
         
         if code == CONTROL_SET_CHANNEL:
             channel = di.getUint64()
             self.channels.add(channel)
-            #print("Registered channel %d for %s:%d" % (channel, self.addr[0], self.addr[1]))
+            
+            print(f"[{self.get_name()}]: Registered channel {channel}")
+            
+            # Clear our timeout task if we have it.
+            if self.timeout_task:
+                self.timeout_task.cancel()
+                self.timeout_task = None
+            
+            # Start our server ping routine by creating a ping task.
+            if not self.ping_task:
+                self.ping_task = asyncio.create_task(self.schedule_ping(delay=0))
             
         elif code == CONTROL_REMOVE_CHANNEL:
             channel = di.getUint64()
-            self.channels.remove(channel)
-            #print("Unregistered channel %d for %s:%d" % (channel, self.addr[0], self.addr[1]))
+            
+            if channel in self.channels:
+                self.channels.remove(channel)
+                print(f"[{self.get_name()}]: Unregistered channel {channel}")
+            
+            if not self.get_primary_channel():
+                # A client without a primary channel can't be sent to or from.
+                # So we begin a timeout countdown for it.
+                # If it doesn't add a new primary channel within' that time,
+                # We will drop this client.
+            
+                # Clear our ping task if we have it.
+                if self.ping_task:
+                    self.ping_task.cancel()
+                    self.ping_task = None
+                
+                # Cancel the old timeout task if it exists.
+                if self.timeout_task:
+                    self.timeout_task.cancel()
+                    self.timeout_task = None
+                
+                # Create our new timeout task.
+                self.timeout_task = asyncio.create_task(self.timeout())
             
         # This is just a guess of what this control code actually did, We don't know in truth.
         # It could've also added all of the channels in-between a range of two channels. But I don't see any good reason
@@ -74,6 +159,10 @@ class MDClient(Client):
             for _ in range(count):
                 self.channels.add(di.getUint64())
                 
+            # Start our server ping routine by creating a ping task.
+            if not self.ping_task:
+                self.ping_task = asyncio.create_task(self.schedule_ping(delay=0))
+                
         # See CONTROL_ADD_RANGE.
         elif code == CONTROL_REMOVE_RANGE:
             count = di.getInt16()
@@ -81,10 +170,32 @@ class MDClient(Client):
                 return
 
             for _ in range(count):
-                self.channels.remove(di.getUint64())
+                channel = di.getUint64()
+                if not channel in self.channels: 
+                    continue
+                self.channels.remove(channel)
+                
+            if not self.get_primary_channel():
+                # A client without a primary channel can't be sent to or from.
+                # So we begin a timeout countdown for it.
+                # If it doesn't add a new primary channel within' that time,
+                # We will drop this client.
+            
+                # Clear our ping task if we have it.
+                if self.ping_task:
+                    self.ping_task.cancel()
+                    self.ping_task = None
+                
+                # Cancel the old timeout task if it exists.
+                if self.timeout_task:
+                    self.timeout_task.cancel()
+                    self.timeout_task = None
+                
+                # Create our new timeout task.
+                self.timeout_task = asyncio.create_task(self.timeout())
             
         elif code == CONTROL_ADD_POST_REMOVE:
-            message = di.getBlob()
+            message = di.getRemainingBytes()
             self.post_removes.append(message)
             
         elif code == CONTROL_CLEAR_POST_REMOVE:
@@ -92,6 +203,7 @@ class MDClient(Client):
             
         elif code == CONTROL_SET_CON_NAME:
             self.connection_names.append(di.getString())
+            self.set_name(self.connection_names[0])
             
         elif code == CONTROL_SET_CON_URL:
             self.connection_urls.append(di.getString())
@@ -119,14 +231,14 @@ class MDClient(Client):
         
     async def send_message(self, message):
         if self.closed:
-            return
+            return False
         if not message: 
-            return
+            return False
         
         # Make sure the message we received from the Message Director is
         # something we care about.
         if not self.channels.intersection(message.channels):
-            return
+            return False
             
         # Construct the datagram from the message.
         dg = Datagram()
@@ -138,7 +250,7 @@ class MDClient(Client):
         dg.appendData(message.data)
         
         # Send our message.
-        await self.send_datagram(dg)
+        return await self.send_datagram(dg)
         
     async def receive_datagram(self, dg):
         di = DatagramIterator(dg)
@@ -167,9 +279,13 @@ class MDClient(Client):
             channels.add(channel)
         
         # Handle the special case of a control message.
-        if count == 1 and channel == CONTROL_MESSAGE:
-            await self.handle_message(di)
-            return
+        if count == 1:
+            if channel == CONTROL_MESSAGE:
+                await self.handle_control_message(di)
+                return
+            elif channel == 20000000:
+                await self.handle_message(di)
+                return
         
         # Add the datagram to the routing wait list. The Message Director will pick them up and pass them along.
         await self.route_message(channels, di)
@@ -177,11 +293,76 @@ class MDClient(Client):
     async def handle_post_removes(self):
         for x in self.post_removes:
             await self.receive_datagram(Datagram(x))
-        
-    def is_uberdog(self):
-        if len(self.connection_names) <= 0:
+            
+    async def send_ping(self):
+        if self.closed:
             return False
-        return self.connection_names[0] == "UberDog"
+        if not self.get_primary_channel():
+            return False
+            
+        usec, sec = math.modf(time.time())
+            
+        # Construct the data for SERVER_PING.
+        dg = Datagram()
+        dg.addUint32(int(sec))
+        dg.addUint32(int(usec * 1000000))
+        if len(self.connection_urls) >= 1:
+            dg.addString(self.connection_urls[0])
+        else:
+            dg.addString("")
+        dg.addUint32(self.get_primary_channel())
+        
+        di = DatagramIterator(dg)
+    
+        # Make the message to send.
+        message = MDMessage([self.get_primary_channel()], SERVER_PING, 20000000, di.getRemainingBytes())
+        
+        # Send our message
+        return await self.send_message(message)
+        
+    async def schedule_ping(self, delay=10):
+        # Sleep for 10 seconds between each ping for the default.
+        await asyncio.sleep(delay)
+        
+        # Verify we aren't already closed.
+        if self.closed:
+            return
+            
+        # Create a timeout task for the client to drop with.
+        # This will trigger if we don't recieve a response ping in time.
+        self.timeout_task = asyncio.create_task(self.timeout())
+        
+        # Send our ping to the server which is connected to us.
+        await self.send_ping()
+        
+    async def handle_lost_connection(self):
+        print(f"[{self.get_name()}]: Lost connection.")
+        await self.close()
+        
+    async def timeout(self):
+        try:
+            # Wait for our timeout period.
+            await asyncio.sleep(self.timeout_period + self.ping_delta)
+            
+            # Don't do anything if we're already closed.
+            if self.closed:
+                return
+            
+            # Handle our lost connection.
+            print(f"[{self.get_name()}]: Timing out.")
+            await self.handle_lost_connection()
+        except KeyboardInterrupt as e:
+            pass
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            traceback.print_exception(e)
+            
+    def get_name(self):
+        addr = self.get_address()
+        if self.name:
+            return f"MD CLIENT ({self.name}) - {addr[0]}:{addr[1]}"
+        return f"MD CLIENT - {addr[0]}:{addr[1]}"
         
     def get_primary_channel(self):
         if len(self.channels) <= 0:
@@ -194,10 +375,34 @@ class MessageDirector(Server):
     def __init__(self, addr, port):
         super().__init__(addr, port)
         
+        self.set_name("MESSAGE DIRECTOR")
+        
     @classmethod
-    async def initialize(cls, addr="0.0.0.0", port=ConfigVariableInt("msg-director-port", 6666).getValue()):
-        self = cls.super().initialize(addr, port)
+    async def initialize(cls, addr="0.0.0.0", port=6666):
+        self = cls(addr, port)
+        await self.start()
         return self
+        
+    async def handle_client(self, reader, writer):
+        client = await self.client_cls.from_server(reader, writer)
+        # Create a timeout task to boot the client if it doesn't do anything.
+        client.timeout_task = asyncio.create_task(client.timeout())
+        self.clients.append(client)
+        
+        addr = client.get_address()
+        print(f"[{self.name}]: Accepted connection from {addr[0]}:{addr[1]}!")
+        
+    async def flush_client(self, client):
+        try:
+            data = await client.read(2048)
+        except Exception as e:
+            data = None
+        
+        # Just return, The Message Director manages ping messages for timeouts instead.
+        if not data:
+            return
+        
+        await client.receive_data(data)
         
     async def flush(self):
         # Before we take in the data from our clients,
@@ -210,12 +415,12 @@ class MessageDirector(Server):
         for client in self.clients:
             route_messages.extend(client.route_messages)
             client.route_messages = [] # Make sure to clear the list, so no duplicates happen!
-            
-        # Route all of the messages we've collected.
-        await asyncio.gather(*map(self.route_message, route_messages))
         
         # Bring in all of the new messages from our clients.
         await super().flush()
+        
+        # Route all of the messages we've collected.
+        await asyncio.gather(*map(self.route_message, route_messages))
         
     async def route_message(self, message):
         if not message: return
@@ -234,10 +439,26 @@ class MessageDirector(Server):
         for client in self.clients:
             await client.send_message(message)
         '''
-
-    async def get_uberdog(self):
-        for client in self.clients:
-            if client.is_uberdog():
-                return client
         
-        return None
+if __name__ == "__main__":
+    async def main():
+        # Get the running loop inside an async function
+        loop = asyncio.get_running_loop()
+        
+        md = await MessageDirector.initialize("0.0.0.0", ConfigVariableInt("msg-director-port", 6666).getValue())
+        
+        try:
+            loop.create_task(md.server.serve_forever())
+        except asyncio.CancelledError:
+            pass
+        
+        while True:
+            try:
+                await md.flush()
+                await asyncio.sleep(0)
+            except KeyboardInterrupt as e:
+                break
+            except Exception as e:
+                traceback.print_exception(e)
+            
+    asyncio.run(main())

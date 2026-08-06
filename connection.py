@@ -1,4 +1,4 @@
-import asyncio, socket, struct, time
+import asyncio, socket, struct, time, traceback
 
 from panda3d.core import Datagram, DatagramIterator
 
@@ -8,6 +8,11 @@ class Client:
         self.reader = None
         self.buffer = bytearray()
         self.closed = True
+        
+        self.timeout_task = None
+        self.timeout_period = 20
+        
+        self.set_name("CLIENT")
         
     @classmethod
     async def initialize(cls, addr, port):
@@ -37,10 +42,15 @@ class Client:
     async def close(self):
         if self.closed:
             return
-            
+        
+        self.timeout_task = None
+
         if self.writer:
-            self.writer.close()
-            await self.writer.wait_closed()
+            try:
+                self.writer.close()
+                await self.writer.wait_closed()
+            except ConnectionResetError as e:
+                pass
             
         del self.buffer
         self.buffer = bytearray()
@@ -53,17 +63,21 @@ class Client:
 
     async def read(self, n):
         if self.closed:
-            return
+            return None
             
         data = await self.reader.read(n)
         return data
         
     async def write(self, data):
         if self.closed:
-            return
+            return False
             
-        self.writer.write(data)
-        await self.writer.drain()
+        try:
+            self.writer.write(data)
+            await self.writer.drain()
+            return True
+        except:
+            return False
         
     async def receive_data(self, data):
         if self.closed:
@@ -81,22 +95,66 @@ class Client:
             await self.receive_datagram(Datagram(bytes(packet)))
         
     async def send_data(self, data):
-        await self.write(data)
+        return await self.write(data)
         
     async def receive_datagram(self, dg):
         return
         
     async def send_datagram(self, dg):
         if self.closed:
-            return
+            return False
 
         buffer = bytearray()
         buffer += struct.pack("<H", dg.getLength())
         buffer += bytes(dg)
-        await self.send_data(bytes(buffer))
+        return await self.send_data(bytes(buffer))
         
     async def handle_lost_connection(self):
         await self.close()
+        
+    async def timeout(self):
+        try:
+            # Wait for our timeout period.
+            await asyncio.sleep(self.timeout_period)
+            
+            # Don't do anything if we're already closed.
+            if self.closed:
+                return
+            
+            # Handle our lost connection.
+            await self.handle_lost_connection()
+        except KeyboardInterrupt as e:
+            pass
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            traceback.print_exception(e)
+        
+    async def flush(self):
+        try:
+            data = await self.read(2048)
+        except Exception as e:
+            data = None
+        
+        if not data:
+            if self.timeout_task: return
+            
+            # We have no data for whatever reason,
+            # Create a timeout task for the client to drop with.
+            self.timeout_task = asyncio.create_task(self.timeout())
+            return
+        elif self.timeout_task != None:
+            # Cancel the disconnection task, We got data.
+            self.timeout_task.cancel()
+            self.timeout_task = None
+        
+        await self.receive_data(data)
+        
+    def set_name(self, name):
+        self.name = name
+        
+    def get_name(self):
+        return self.name
         
     def is_closed(self):
         return self.closed
@@ -119,6 +177,8 @@ class Server:
         
         self.server_closed = True
         
+        self.name = "SERVER"
+        
     @classmethod
     async def initialize(cls, addr, port):
         if not self.server_closed:
@@ -132,8 +192,7 @@ class Server:
         if not self.server_closed:
             return
             
-        self.server = await asyncio.start_server(self.handle_client, self.addr, self.port)
-        await self.server.start_serving()
+        self.server = await asyncio.start_server(self.handle_client, self.addr, self.port, start_serving=False)
         self.server_closed = False
         
     async def close(self):
@@ -165,8 +224,12 @@ class Server:
         client = await self.client_cls.from_server(reader, writer)
         self.clients.append(client)
         
+        addr = client.get_address()
+        print(f"[{self.name}]: Accepted connection from {addr[0]}:{addr[1]}!")
+        
     async def drop_client(self, client):
-        print("Dropping client from %s!" % (str(client.get_address())))
+        addr = client.get_address()
+        print(f"[{self.name}]: Dropping connection from {addr[0]}:{addr[1]}!")
         
         # Handle the connection being lost.
         # The client will close itself on a lost connection.
@@ -175,17 +238,45 @@ class Server:
         # We still do want to force it closed just in case though.
         if not client.is_closed():
             await client.close()
+            
+    async def client_timeout(self, client):
+        try:
+            # Wait for our timeout period.
+            await asyncio.sleep(client.timeout_period)
+            
+            # Don't do anything if we're already closed.
+            if client.closed:
+                return
+                
+            addr = client.get_address()
+            print(f"[{self.name}]: Timing out connection for {addr[0]}:{addr[1]}.")
+            
+            # Handle the disconnection of the client.
+            await self.drop_client(client)
+        except KeyboardInterrupt as e:
+            pass
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            traceback.print_exception(e)
         
     async def flush_client(self, client):
         try:
             data = await client.read(2048)
         except Exception as e:
             data = None
-        
+
         if not data:
-            # We have no data and have lost the connection for whatever reason.
-            await self.drop_client(client)
+            if client.timeout_task: return
+            
+            # We have no data for whatever reason,
+            # Create a timeout task for the client to drop with.
+            client.timeout_task = asyncio.create_task(self.client_timeout(client))
             return
+        elif client.timeout_task != None:
+            # Cancel the disconnection task, We got data.
+            client.timeout_task.cancel()
+            client.timeout_task = None
         
         await client.receive_data(data)
         
@@ -193,12 +284,15 @@ class Server:
         # Iterate all of our clients and receive data for them.
         await asyncio.gather(*map(self.flush_client, self.clients))
         
-        '''
-        for i in range(0, len(self.clients)):
-            await self.flush_client(self.clients[i])
-        '''
-        
         # Remove all of our closed clients.
-        for i in range(0, len(self.clients)):
-            if self.clients[i].is_closed():
-                del self.clients[i]
+        for client in list(self.clients):
+            if not client.is_closed(): 
+                continue
+            
+            self.clients.remove(client)
+
+    def set_name(self, name):
+        self.name = name
+        
+    def get_name(self):
+        return self.name

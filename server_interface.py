@@ -6,6 +6,7 @@ Message Director. The State Server, Client Agent, and Database Server all inheri
 import asyncio, functools, os, socket, struct, time
 
 from panda3d.core import ConfigVariableInt, ConfigVariableBool, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
+from panda3d.direct import DCFile
 
 from connection import Client
 from msgtypes import *
@@ -78,7 +79,7 @@ class ServerInterface(Client):
                 symbol_name = suffix[0]
                 suffix=suffix[1:]
                 for ext in suffix:
-                    dclass = dcFile.getClassByName(symbol_name)
+                    dclass = dc_file.getClassByName(symbol_name)
                     if dclass:
                         self.dclasses_by_name[symbol_name + ext] = dclass
 
@@ -163,7 +164,7 @@ class ServerInterface(Client):
         dg.addInt8(1)
         dg.addUint64(CONTROL_MESSAGE)
         dg.addUint16(CONTROL_ADD_RANGE)
-        dg.addInt16((len(channels))
+        dg.addInt16(len(channels))
         for channel in channels:
             dg.addUint64(channel)
             
@@ -179,7 +180,7 @@ class ServerInterface(Client):
         dg.addInt8(1)
         dg.addUint64(CONTROL_MESSAGE)
         dg.addUint16(CONTROL_REMOVE_RANGE)
-        dg.addInt16((len(channels))
+        dg.addInt16(len(channels))
         for channel in channels:
             dg.addUint64(channel)
             
@@ -209,7 +210,7 @@ class ServerInterface(Client):
         dg.addInt8(1)
         dg.addUint64(CONTROL_MESSAGE)
         dg.addUint16(CONTROL_ADD_POST_REMOVE)
-        dg.addBlob(datagram.getMessage())
+        dg.appendData(datagram.getMessage())
         
         # Send our datagram.
         await self.send_datagram(dg)

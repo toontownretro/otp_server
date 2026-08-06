@@ -12,6 +12,8 @@ class DistributedObject:
         self.senders = []
         self.senderId = None
         
+        self.children = set()
+        
         self.fields = {}
         
         for index in range(self.dclass.getNumInheritedFields()):
@@ -19,7 +21,7 @@ class DistributedObject:
             if (field.isRequired() or field.isRam()) and field.asAtomicField():
                 self.fields[field.getNumber()] = None
                 
-    def get(self, field, default=None)
+    def get(self, field, default=None):
         field = self.dclass.getFieldByName(field)
         if not field:
             return None
@@ -54,7 +56,8 @@ class DistributedObject:
         packer = DCPacker()
         packer.beginPack(field)
         
-        if field.getNumber() in self.fields:
+        index = field.getNumber()
+        if index in self.fields and self.fields[index] != None:
             field.packArgs(packer, self.fields[field.getNumber()])
         else:
             packer.packDefaultValue()
@@ -95,33 +98,49 @@ class DistributedObject:
         dg.appendData(dg2.getMessage())
         return dg
         
-    def receiveField(self, field, di):
+    def receiveMolecularField(self, field, di):
+        molecular = field.asMolecularField()
+        if not molecular:
+            return None
+            
         packer = DCPacker()
         packer.setUnpackData(di.getRemainingBytes())
-        
-        molecular = field.asMolecularField()
-        if molecular:
-            for n in range(molecular.getNumAtomics()):
-                atomic = molecular.getAtomic(n)
-                
-                packer.beginUnpack(atomic)
-                value = atomic.unpackArgs(packer)
-                
-                if atomic.getNumber() in self.fields:
-                    self.fields[atomic.getNumber()] = value
-                    
-                packer.endUnpack()
-                
-        else:
-            packer.beginUnpack(field)
-            value = field.unpackArgs(packer)
+
+        res = []
+        for n in range(molecular.getNumAtomics()):
+            atomic = molecular.getAtomic(n)
             
-            if field.getNumber() in self.fields:
-                self.fields[field.getNumber()] = value
-            
+            packer.beginUnpack(atomic)
+            value = atomic.unpackArgs(packer)
             packer.endUnpack()
             
+            if not atomic.getNumber() in self.fields:
+                res.append(False)
+                continue
+                
+            self.fields[atomic.getNumber()] = value
+            res.append(True)
+
         di.skipBytes(packer.getNumUnpackedBytes())
+        return res
+        
+    def receiveField(self, field, di):
+        if field.asMolecularField(): 
+            return self.receiveMolecularField(field, di)
+        
+        packer = DCPacker()
+        packer.setUnpackData(di.getRemainingBytes())
+
+        packer.beginUnpack(field)
+        value = field.unpackArgs(packer)
+        packer.endUnpack()
+        di.skipBytes(packer.getNumUnpackedBytes())
+        
+        if not field.getNumber() in self.fields:
+            return False
+            
+        self.fields[field.getNumber()] = value
+        return True
         
     def receiveRequired(self, di):
         for index in range(self.dclass.getNumInheritedFields()):

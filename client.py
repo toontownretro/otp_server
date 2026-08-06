@@ -1097,14 +1097,12 @@ class Client(connection.Client):
         friendIds = []
         for i in range(0, len(friendsList)):
             friendIds.append(friendsList[i][0])
-
+        
+        # Send the online message to all of our friends.
         for client in self.agent.clients:
-            if not client.avatar:
-                continue
-
             # If the id is in the list, It means this friend is online,
             # Otherwise. We'll skip this client.
-            if not client.avatar.doId in friendIds:
+            if not client.avatar or not client.avatar.doId in friendIds:
                 continue
                 
             # Our friend is online, Let them know we are too!
@@ -1143,14 +1141,12 @@ class Client(connection.Client):
         
         # Send the offline message to all of our friends.
         for client in self.agent.clients:
-            if not client.avatar:
-                continue
-
             # If the id is in the list, It means this friend is online,
             # Otherwise. We'll skip this client.
-            if not client.avatar.doId in friendIds:
+            if not client.avatar or not client.avatar.doId in friendIds:
                 continue
-                
+
+            # Our friend is online, Let them know we are heading off!
             dg = Datagram()
             dg.add_uint32(avatarDoId)
             await client.send_message(CLIENT_FRIEND_OFFLINE, dg)
@@ -1215,9 +1211,6 @@ class Client(connection.Client):
         if self.avatar.doId == sender:
             return
             
-        old_area_interest = await self.has_interest(prevParentId, prevZoneId)
-        new_area_interest = await self.has_interest(do.parentId, do.zoneId)
-            
         # If we're the owner, we must receive it in any case.
         if self.avatar.doId == do.doId:
             dg = Datagram()
@@ -1226,6 +1219,9 @@ class Client(connection.Client):
             dg.add_uint32(do.zoneId)
             await self.send_message(CLIENT_OBJECT_LOCATION, dg)
             return
+            
+        old_area_interest = await self.has_interest(prevParentId, prevZoneId)
+        new_area_interest = await self.has_interest(do.parentId, do.zoneId)
             
         # We have no interest in either the old or new locations, Ignore this request for movement.
         if not old_area_interest and not new_area_interest:
