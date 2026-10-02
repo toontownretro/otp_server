@@ -141,6 +141,25 @@ class ServerInterface(Client):
         # Send our datagram.
         await self.send_datagram(dg)
         
+    def get_puppet_channel(self, channel, puppetType):
+        return (puppetType << 32) + channel
+        
+    async def register_for_puppet_channel(self, channel, puppetType):
+        if self.closed:
+            return
+        
+        # Register our puppet channel.
+        puppet_channel = self.get_puppet_channel(channel, puppetType)
+        await self.register_for_channel(puppet_channel)
+        
+    async def unregister_for_puppet_channel(self, channel, puppetType):
+        if self.closed:
+            return
+        
+        # Unregister our puppet channel.
+        puppet_channel = self.get_puppet_channel(channel, puppetType)
+        await self.unregister_for_channel(puppet_channel)
+        
     async def set_connection_name(self, name):
         if self.closed:
             return

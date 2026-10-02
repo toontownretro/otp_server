@@ -26,6 +26,7 @@ class MDClient(Client):
         
         self.ping_task = None
         self.ping_delta = 0.0
+        self.ping_time = 0.0
         self.name = None
         
     async def close(self):
@@ -37,6 +38,7 @@ class MDClient(Client):
             self.ping_task.cancel()
         self.ping_task = None
         self.ping_delta = 0.0
+        self.ping_time = 0.0
 
         # Try to handle any post remove datagrams.
         await self.handle_post_removes()
@@ -69,16 +71,13 @@ class MDClient(Client):
                 print(f"[{self.get_name()}]: Received ping message from channel {sender} not meant for us ({self.get_primary_channel()}).")
                 return
                 
-            now = time.time()
-                
             # Deconstruct ping message.
             sec = di.getUint32()
             usec = di.getUint32()
             url = di.getString()
             channel = di.getUint32()
             
-            pingTime = sec + usec / 1000000.0
-            delta = now - pingTime
+            delta = time.time() - (sec + usec / 1000000.0)
             
             # Allow up to double of our timeout period for a extra leniency
             # with clients that are trying to ping.
@@ -300,7 +299,8 @@ class MDClient(Client):
         if not self.get_primary_channel():
             return False
             
-        usec, sec = math.modf(time.time())
+        self.ping_time = time.time()
+        usec, sec = math.modf(self.ping_time)
             
         # Construct the data for SERVER_PING.
         dg = Datagram()
@@ -347,9 +347,11 @@ class MDClient(Client):
             # Don't do anything if we're already closed.
             if self.closed:
                 return
+                
+            delta = time.time() - self.ping_time
+            print(f"[{self.get_name()}]: Timing out with no response within {round(delta, 4)} seconds.")
             
             # Handle our lost connection.
-            print(f"[{self.get_name()}]: Timing out.")
             await self.handle_lost_connection()
         except KeyboardInterrupt as e:
             pass

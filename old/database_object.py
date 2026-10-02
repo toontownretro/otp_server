@@ -21,6 +21,7 @@ class DatabaseObject:
         self.uuId = uuId
         self.dclass = dclass
         self.fields = {}
+        self.dcObjectType = 0
         
     def packRequired(self, dg):
         packer = DCPacker()
@@ -114,7 +115,7 @@ class DatabaseObject:
             self.fields[field.getName()] = value
         
     def getFields(self):
-        return dict(self.fields)
+        return self.fields
         
     def receiveField(self, field, di):
         packer = DCPacker()

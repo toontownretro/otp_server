@@ -2,25 +2,24 @@ import base64, hashlib, os, threading, traceback, uuid
 
 from datetime import datetime
 
-dbmType = "gnu"
-try:
-    # If we can, Use semidbm as a fast db access method.
-    import semidbm as dbm
-    dbmType = "semidbm"
-except:
-    # Anydbm was made into dbm.ndbm but we'd rather use dbm.gnu anyways.
-    import dbm.gnu as dbm
-    
-try:
-    # Try to use simplejson if we can, Otherwise just use normal json.
-    import simplejson as json
-except:
-    import json
-
 from pprint import pformat
 
-# Use pymysql for our SQL connection.
-import pymysql as MySQLdb
+# Use MariaDB for our SQL connection.
+import mariadb
+from mariadb.constants.ERR import *
+from mariadb import (
+    DataError,
+    DatabaseError,
+    Error,
+    IntegrityError,
+    InterfaceError,
+    InternalError,
+    NotSupportedError,
+    OperationalError,
+    PoolError,
+    ProgrammingError,
+    Warning,
+)
 
 from panda3d.core import ConfigVariableInt, ConfigVariableString, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
 from panda3d.direct import DCPacker
@@ -29,340 +28,144 @@ from database_object import DatabaseObject
 from distributed_object import DistributedObject
 from msgtypes import *
 
-class DatabaseBackend:
-    def __init__(self, manager):
-        self.manager = manager
-        
-        # DC File
-        self.dc = self.manager.dc
-            
-        self._mutexLock = threading.RLock()
+'''
+We use MariaDB for our SQL servers.
+Toontown Online used MySQL but MySQL has fallen behind in every way and that
+is besides the licensing issues.
 
-    def addToAccountServer(self, key, value):
-        """
-        Add a value to our database storage, If we don't have one.
-        An exception will be raised.
-        """
-        raise Exception("Tried to add value to account server, But we don't have one!")
-        
-    def getFromAccountServer(self, key):
-        """
-        Get the value of a key in our database storage.
-        If we don't have a storage, We always return None.
-        """
-        return None
-    
-    def inAccountServer(self, key):
-        """
-        Return if a key is within' our databases storage.
-        If we don't have a storage, This is always False.
-        """
-        return False
-    
-    def hasAccountServer(self):
-        """
-        Check if we have a file or server for account database storage.
-        """
-        return False
-        
-    def load(self, doId):
-        """
-        Safely loads the data from database using a mutex lock,
-        so the process is thread safe...
-        """
+We currently use MariaDB 2.0 which is in pre-release so you can install the connector with pip below.
 
-        with self._mutexLock:
-            return self.handleLoad(doId)
-            
-    def handleLoad(self, doId):
-        """
-        Loads the data from database to memory safely.
-        """
-    
-    def save(self, do):
-        """
-        Safely saves the data to database using a mutex lock,
-        so the process is thread safe...
-        """
+python.exe -m pip install --pre mariadb[binary,pool]
+'''
 
-        with self._mutexLock:
-            self.handleSave(do)
-            
-    def handleSave(self, do):
-        """
-        Dumps the data from memory out to database safely.
-        """
-        
-    def exists(self, doId):
-        """
-        Return if the specified doId exists in the database.
-        """
-        return False
-        
-    def getNextDoId(self):
-        """
-        Get the next open doId for the backend we're using.
-        """
-        return None
-        
-class DatabaseBackendFile(DatabaseBackend):
-    def __init__(self, manager):
-        DatabaseBackend.__init__(self, manager)
-        
-        # Database Configs
-        self.databaseDirectory = Filename(os.path.normpath(os.path.expandvars(ConfigVariableString('database-directory', "database").getValue())))
-        self.databaseBackendName = ConfigVariableString('database-backend', "raw").getValue()
-        self.databaseStoreFile = ConfigVariableString('database-storage', "game-accounts-%s-%s.db" % (self.databaseBackendName, dbmType)).getValue()
-        self.databaseStore = dbm.open(self.databaseDirectory + "/" + self.databaseStoreFile, 'c')
-        
-        # This config variable should be overwritten by our inheritors. 
-        self.databaseExtension = ".bin"
-        
-        # Get our Panda3D Virtual File System, And keep a reference.
-        self.vfs = VirtualFileSystem.getGlobalPtr()
-        
-        if not self.vfs.exists(self.databaseDirectory):
-            self.vfs.makeDirectoryFull(self.databaseDirectory)
-            
-    def addToAccountServer(self, key, value):
-        """
-        Add a value to our database storage, If we don't have one.
-        An exception will be raised.
-        """
-        if not self.hasAccountServer():
-            raise Exception("Tried to add value to account server, But we don't have one!")
-            
-        self.databaseStore[str(key).encode("utf-8")] = str(value)
-        
-        # If our database has syncing. Then let's sync now.
-        if getattr(self.databaseStore, 'sync', None):
-            self.databaseStore.sync()
-        
-    def getFromAccountServer(self, key):
-        """
-        Get the value of a key in our database storage.
-        If we don't have a storage, We always return None.
-        """
-        if not self.hasAccountServer(): 
-            return None
-            
-        return self.databaseStore[str(key).encode("utf-8")]
+class DatabaseSQL:
+    # SQL Errors
+    DbAlreadyExists = ER_DB_CREATE_EXISTS
+    TableAlreadyExists = ER_TABLE_EXISTS_ERROR
+    ServerShuttingDown = ER_SERVER_SHUTDOWN
+    ServerGoneAway = CR_SERVER_GONE_ERROR
+    ServerLost = CR_SERVER_LOST
     
-    def inAccountServer(self, key):
-        """
-        Return if a key is within' our databases storage.
-        If we don't have a storage, This is always False.
-        """
-        if not self.hasAccountServer(): 
+    def __init__(self, host, port, user, passwd, db):
+        self.host = host
+        self.port = port
+        self.user = user
+        self.passwd = passwd
+        self.db = None
+        self.db_name = db
+        
+        self._mutex_lock = threading.RLock()
+        
+    async def connect(self):
+        # Try to connect to our SQL database at the host.
+        try:
+            self.db = await mariadb.asyncConnect(host=self.host, port=self.port, user=self.user, passwd=self.passwd)
+        except OperationalError as e:
+            raise Exception(f"Failed to connect to SQL db={self.db_name} at {self.host}:{self.port}.")
+            return
+            
+        print(f"Connected to database={self.db_name} at {self.host}:{self.port}.")
+        
+        # Temp hack for developers, Create DB structure if it doesn't exist already.
+        cursor = self.db.cursor()
+        try:
+            await cursor.execute(f"CREATE DATABASE `{self.db_name}`")
+            if __debug__:
+                print(f"Database '{self.db_name}' did not exist, created a new one!")
+        except ProgrammingError as e:
+            pass
+        except OperationalError as e:
+            pass
+            
+        try:
+            await cursor.execute(f"USE `{self.db_name}`")
+            if __debug__:
+                print(f"Using database '{self.db_name}'")
+        finally:
+            await cursor.close()
+            
+        # We don't want our data to auto-commit, We want to rollback any errors.
+        self.db.autocommit(False)
+        
+    async def reconnect(self):
+        if not self.db: return False
+
+        # Ping the server, If we failed attempt to reconnect to the host.
+        try:
+            await self.db.ping(True)
+        except:
+            try:
+                await self.db.reconnect()
+            except Exception as e:
+                return False
+
+            cursor = self.db.cursor()
+            
+            try:
+                await cursor.execute(f"CREATE DATABASE `{self.db_name}`")
+                if __debug__:
+                    print(f"Database '{self.db_name}' did not exist, created a new one!")
+            except ProgrammingError as e:
+                pass
+            except OperationalError as e:
+                pass
+            
+            try:
+                await cursor.execute(f"USE `{self.db_name}`")
+            finally:
+                await cursor.close()
+                
+            # We don't want our data to auto-commit, We want to rollback any errors.
+            self.db.autocommit(False)
+            
+        print(f"Reconnected to SQL server at {self.host}:{self.port} using database {self.db_name}")
+        return True
+        
+    async def is_connected(self):
+        if not self.db: return False
+        
+        try:
+            await self.db.ping(True)
+            return True
+        except:
             return False
 
-        return str(key).encode("utf-8") in self.databaseStore.keys()
-    
-    def hasAccountServer(self):
-        """
-        Check if we have a file or server for account database storage.
-        """
-        return self.databaseStore != None
-        
-    def exists(self, doId):
-        """
-        Return if the specified doId exists in the database.
-        """
-        return os.path.isfile(os.path.join(self.databaseDirectory.getFullpath(), str(doId) + self.databaseExtension))
-        
-    def getNextDoId(self):
-        """
-        Get the next open doId for the backend we're using.
-        """
-        
-        # We get a doId
-        files = os.listdir(self.databaseDirectory)
-        
-        if sum(filename.endswith(self.databaseExtension) for filename in files) == 0:
-            return 10000000
+    async def disconnect(self):
+        if self.db:
+            await self.db.close()
+            self.db = None
             
-        return max([int(filename[:-(len(self.databaseExtension))]) for filename in files if filename.endswith(self.databaseExtension)]) + 1
+    async def begin(self):
+        if not self.db:
+            return
+        await self.db.begin()
+            
+    async def commit(self):
+        if not self.db:
+            return
+        await self.db.commit()
+        
+    async def rollback(self):
+        if not self.db:
+            return
+        await self.db.rollback()
+            
+    def get_cursor(self):
+        if not self.db:
+            return None
+        return self.db.cursor()
+        
+    def get_binary_cursor(self):
+        if not self.db:
+            return None
+        return self.db.cursor(binary=True)
 
-class DatabaseBackendRaw(DatabaseBackendFile):
-    def __init__(self, manager):
-        DatabaseBackendFile.__init__(self, manager)
-        
-        self.databaseExtension = ConfigVariableString('database-extension', ".raw").getValue()
-            
-    def handleLoad(self, doId):
-        """
-        Loads the data from database to memory safely.
-        """
-        with open(os.path.join(self.databaseDirectory, str(doId) + self.databaseExtension), "rb") as file:
-            data = file.read()
-            
-            if data[:16] != b"# DatabaseObject":
-                raise Exception("Invalid header for Database Object!")
-                
-            dclassName, version, doId, uuId, fieldsData = eval(data)
-            
-            minVersion = DatabaseObject.minVersion
-            lastVersion = DatabaseObject.version
-            
-            # Check for our minimum supported version.
-            if version < minVersion or version > lastVersion:
-                raise Exception("Tried to read database object with version %d.%d.%d, But only %d.%d.%d through %d.%d.%d is supported!" % (version[0], version[1], version[2], minVersion[0], minVersion[1], minVersion[2], lastVersion[0], lastVersion[1], lastVersion[2]))
-
-            # Convert the string back into a UUID instance.
-            uuId = uuid.UUID(uuId)
-            
-            dclass = self.dc.getClassByName(dclassName)
-            
-            do = DatabaseObject(self.manager, doId, uuId, dclass)
-            do.setFields(fieldsData)
-            return do
-            
-        print("ERROR: Failed to load Database Object %d!" % (doId))
-        return None
-            
-    def handleSave(self, do):
-        """
-        Dumps the data from memory out to database safely.
-        """
-        with open(os.path.join(self.databaseDirectory, str(do.doId) + self.databaseExtension), "wb") as file:
-            data = b"# DatabaseObject\n" + pformat((do.dclass.getName(), do.version, do.doId, str(do.uuId), do.fields), width=-1, sort_dicts=True).encode("utf8")
-            file.write(data)
-        
-class DatabaseBackendPacked(DatabaseBackendFile):
-    def __init__(self, manager):
-        DatabaseBackendFile.__init__(self, manager)
-        
-        self.databaseExtension = ConfigVariableString('database-extension', ".bin").getValue()
-            
-    def handleLoad(self, doId):
-        """
-        Loads the data from database to memory safely.
-        """
-        with open(os.path.join(self.databaseDirectory, str(doId) + self.databaseExtension), "rb") as file:
-            data = file.read()
-            
-            packer = DCPacker()
-            packer.setUnpackData(data)
-            
-            # Get our version from our packed object.
-            majVer = packer.rawUnpackUint8()
-            minVer = packer.rawUnpackUint8()
-            subVer = packer.rawUnpackUint8()
-            version = (majVer, minVer, subVer)
-            
-            minVersion = DatabaseObject.minVersion
-            lastVersion = DatabaseObject.version
-            
-            # Check for our minimum supported version.
-            if version < minVersion or version > lastVersion:
-                raise Exception("Tried to read database object with version %d.%d.%d, But only %d.%d.%d through %d.%d.%d is supported!" % (version[0], version[1], version[2], minVersion[0], minVersion[1], minVersion[2], lastVersion[0], lastVersion[1], lastVersion[2]))
-                
-            dclass = self.manager.dbss.dc.getClassByName(packer.rawUnpackString())
-            doId = packer.rawUnpackUint32()
-            
-            # Convert the string back into a UUID instance.
-            uuId = uuid.UUID(packer.rawUnpackString())
-            
-            do = DatabaseObject(self.manager, doId, uuId, dclass)
-            
-            # We get every field
-            while packer.getUnpackLength() > packer.getNumUnpackedBytes():
-                field = dclass.getFieldByName(packer.rawUnpackString())
-                
-                packer.beginUnpack(field)
-                value = field.unpackArgs(packer)
-                packer.endUnpack()
-                
-                if not field.isDb():
-                    print("Reading server only field %r." % field.getName())
-                    
-                do.fields[field.getName()] = value
-                
-            return do
-            
-        print("ERROR: Failed to load Database Object %d!" % (doId))
-        return None
-            
-    def handleSave(self, do):
-        """
-        Dumps the data from memory out to database safely.
-        """
-        with open(os.path.join(self.databaseDirectory, str(do.doId) + self.databaseExtension), "wb") as file:
-            packer = DCPacker()
-            
-            # Pack our version.
-            packer.rawPackUint8(do.majVer)
-            packer.rawPackUint8(do.minVer)
-            packer.rawPackUint8(do.subVer)
-            
-            # Pack our DC object.
-            packer.rawPackString(do.dclass.getName())
-            packer.rawPackUint32(do.doId)
-            packer.rawPackString(str(do.uuId))
-            
-            # We get every field
-            for fieldName, value in do.fields.items():
-                field = do.dclass.getFieldByName(fieldName)
-                
-                if field.isDb():
-                    packer.rawPackString(field.getName())
-                    packer.beginPack(field)
-                    field.packArgs(packer, do.fields[field.getName()])
-                    packer.endPack()
-
-            data = packer.getBytes()
-            file.write(data)
-            
-class DatabaseBackendJSON(DatabaseBackendFile):
-    def __init__(self, manager):
-        DatabaseBackendFile.__init__(self, manager)
-        
-        self.databaseExtension = ConfigVariableString('database-extension', ".json").getValue()
-            
-    def handleLoad(self, doId):
-        """
-        Loads the data from database to memory safely.
-        """
-        with open(os.path.join(self.databaseDirectory, str(doId) + self.databaseExtension), "r") as file:
-            dclassName, version, doId, uuId, fieldsData = json.load(file)
-            
-            # Close our file, We've read the data.
-            file.close()
-            
-            # Make sure our version is a tuple.
-            version = tuple(version)
-            
-            minVersion = DatabaseObject.minVersion
-            lastVersion = DatabaseObject.version
-            
-            # Check for our minimum supported version.
-            if version < minVersion or version > lastVersion:
-                raise Exception("Tried to read database object with version %d.%d.%d, But only %d.%d.%d through %d.%d.%d is supported!" % (version[0], version[1], version[2], minVersion[0], minVersion[1], minVersion[2], lastVersion[0], lastVersion[1], lastVersion[2]))
-
-            # Convert the string back into a UUID instance.
-            uuId = uuid.UUID(uuId)
-            
-            dclass = self.dc.getClassByName(dclassName)
-            
-            do = DatabaseObject(self.manager, doId, uuId, dclass)
-            do.setFields(fieldsData)
-            return do
-            
-        print("ERROR: Failed to load Database Object %d!" % (doId))
-        return None
-            
-    def handleSave(self, do):
-        """
-        Dumps the data from memory out to database safely.
-        """
-        with open(os.path.join(self.databaseDirectory, str(do.doId) + self.databaseExtension), "w") as file:
-            doData = (do.dclass.getName(), do.version, do.doId, str(do.uuId), do.fields)
-            # Dump our data out to json and into our file.
-            json.dump(doData, file, ensure_ascii=False, sort_keys=True, indent=2)
-            # Close our file, Our data is now written.
-            file.close()
-        
-class DatabaseBackendMySQL(DatabaseBackend):
+    def get_dict_cursor(self):
+        if not self.db:
+            return None
+        return self.db.cursor(dictionary=True)
+           
+class DCDatabase(DatabaseSQL):
     # Types for reading our field datagrams.
     T_NONE = 0
     T_BOOL = 1
@@ -375,274 +178,308 @@ class DatabaseBackendMySQL(DatabaseBackend):
     T_LIST = 8
     T_DICT = 9
 
-    def __init__(self, manager):
-        DatabaseBackend.__init__(self, manager)
-
-        # Get the config variables for our MySQL database.
-        self.host = ConfigVariableString("mysql-host", "localhost").getValue()
-        self.port = ConfigVariableInt("mysql-port", 3306).getValue()
-        self.user = ConfigVariableString("mysql-user", "").getValue()
-        self.passwd = ConfigVariableString("mysql-passwd", "").getValue()
-        self.db = None
+    def __init__(self, manager, host, port, user, passwd, db):
+        super().__init__(host, port, user, passwd, db)
         
-        # Get our language for any language specific database, Then get the name.
-        language = ConfigVariableString("language", "english").getValue()
-        self.dbName = "toontownTopDb"
-        if language == 'castillian':
-            self.dbName = "es_toontownTopDb"
-        elif language == "japanese":
-            self.dbName = "jp_toontownTopDb"
-        elif language == "german":
-            self.dbName = "de_toontownTopDb"
-        elif language == "french":
-            self.dbName = "french_toontownTopDb"
-        elif language == "portuguese":
-            self.dbName = "br_toontownTopDb"
+        self.manager = manager
         
-        # Try connecting to our MySQL database.
-        self.connect(self.host, self.port, self.user, self.passwd)
+        # DC File
+        self.dc = self.manager.dc
+        self.dc_hash = self.dc.get_hash()
         
-    def connect(self, host, port, user, passwd):
-        # Try to connect to our MySQL database at the host.
-        try:
-            self.db = MySQLdb.connect(host=host, port=port, user=user, passwd=passwd)
-        except MySQLdb.OperationalError as e:
-            raise Exception("Failed to connect to MySQL db=%s at %s:%d."% (self.dbName, host, port))
-            return
-            
-        print("Connected to gamedb=%s at %s:%d." % (self.dbName, host, port))
-        
-        # Temp hack for developers, Create DB structure if it doesn't exist already.
-        cursor = self.db.cursor()
-        try:
-            cursor.execute("CREATE DATABASE `%s`" % self.dbName)
-            if __debug__:
-                print("Database '%s' did not exist, created a new one!" % self.dbName)
-        except MySQLdb.ProgrammingError as e:
-            # print('%s' % str(e))
-            pass
-        except MySQLdb.OperationalError as e:
-            # print('%s' % str(e))
-            pass
-            
-        # We don't want our data to auto-commit, We want to rollback any errors.
-        self.db.autocommit(False)
-            
-        cursor.execute("USE `%s`" % self.dbName)
-        if __debug__:
-            print("Using database '%s'" % self.dbName)
+    async def connect(self):
+        await super().connect()
             
         # We've connected to our database! Now we want to create our tables if we need to.
         # Let's check for them all.
-        self.checkTables()
+        await self.check_tables()
             
-    def reconnect(self):
+    async def check_tables(self):
         if not self.db:
-            # For some reason, We weren't connected to begin with! Try to connect to the server!
-            #print("MySQL server was missing, attempting to reconnect.")
-            #self.db.close()
-            self.db = MySQLdb.connect(host=self.host, port=self.port, user=self.user, passwd=self.passwd)
-            # We don't want our data to auto-commit, We want to rollback any errors.
-            self.db.autocommit(False)
-        else:
-            # Ping the server, And attempt to reconnect to the host.
-            self.db.ping(True)
-
-        cursor = self.db.cursor()
-        cursor.execute("USE `%s`" % self.dbName)
-        print("Reconnected to MySQL server at %s:%d." % (self.host, self.port))
-
-    def disconnect(self):
-        if self.db:
-            self.db.close()
-            self.db = None
-            
-    def checkTables(self):
-        if not self.db:
-            print("Could not check the SQL tables because we don't have a MYSQL server connection! Attempting to reconnect.")
-            # Reconnect if we can.
-            self.reconnect()
-            # Retry our check.
-            self.checkTables()
             return
 
-        cursor = self.db.cursor()
-        dictCursor = MySQLdb.cursors.DictCursor(self.db)
+        cursor = self.get_cursor()
         try:
-            self.db.begin() # Start transaction
+            await self.begin() # Start transaction
             
-            # Check our "database server" accounts table. 
-            cursor.execute("Show tables like 'accounts';")
+            # Check the table which stores all the DC objects
+            await cursor.execute("Show tables like 'DCObject';")
             if not cursor.rowcount:
-                # We know the accounts table doesn't exist correctly, create it again
-                cursor.execute("""
-                DROP TABLE IF EXISTS accounts;
+                # We know the dc objects table doesn't exist correctly, create it again.
+                await cursor.execute("""
+                DROP TABLE IF EXISTS DCObject;
                 """)
-
-                cursor.execute("""
-                CREATE TABLE accounts(
-                  accountName       VARCHAR(10) NOT NULL,
-                  doId              BIGINT NOT NULL,
-                  PRIMARY KEY (accountName),
-                  UNIQUE INDEX uidx_doId(doId)
-                )
-                ENGINE=Innodb
-                DEFAULT CHARSET=utf8;
-                """)
-            
-            # Check the table which stores all the root DC objects, (Only central info, No fields)
-            cursor.execute("Show tables like 'objects';")
-            if not cursor.rowcount:
-                # We know the objects table doesn't exist correctly, create it again
-                cursor.execute("""
-                DROP TABLE IF EXISTS objects;
-                """)
-
-                cursor.execute("""
-                CREATE TABLE objects(
-                  dcClass       VARCHAR(32) NOT NULL,
-                  doId          BIGINT NOT NULL,
-                  uuId          VARCHAR(36) NOT NULL,
-                  PRIMARY KEY (doId),
+                
+                # A DC object (A collection of information regarding a class in a .dc file for saving)
+                # is meant to be a self-contained collection of information about the object in question.
+                # This includes the doId, a unique indentifer for the object, and the data for all of the
+                # fields marked for storage.
+                #
+                # A hash for the DCFile instance is also included because if changes occur in the .dc files;
+                # Field data that was formerly valid may be become invalid or fields may disappear if the .dc files are changed in any way.
+                #
+                # The dclass is stored within the FieldData itself as the field 'DcObjectType' and this field is stored
+                # in a special manner for easy handling.
+                await cursor.execute("""
+                CREATE TABLE DCObject(
+                  DoId          BIGINT NOT NULL PRIMARY KEY,
+                  UUID          VARCHAR(36) NOT NULL,
+                  DCHash        INT,
+                  FieldData     MEDIUMBLOB,
                   UNIQUE INDEX uidx_uuid(uuId)
                 )
                 ENGINE=Innodb
                 DEFAULT CHARSET=utf8;
                 """)
                 
-            # Check our field tables which store all the fields for our DC Objects. (No central info, Only fields.)
-            for i in range(0, self.dc.getNumClasses()):
-                dcc = self.dc.getClass(i)
-                dcName = dcc.getName()
-                
-                cursor.execute("Show tables like '%s_field';" % (dcName))
-                if cursor.rowcount: break
-                
-                ss = """CREATE TABLE IF NOT EXISTS %s_fields(
-                  doId        BIGINT NOT NULL PRIMARY KEY""" % (dcName)
-                
-                numFields = 0
-                for j in range(0, dcc.getNumInheritedFields()):
-                    field = dcc.getInheritedField(j)
-                    if field.isDb() and not field.asMolecularField():
-                        # TODO: See if you can't find a convenient way to get the max length of
-                        #       for example a string field, and use a VARCHAR(len) instead of MEDIUMBLOB.
-                        #       Same for blobs with VARBINARY.
-                        ss += ",%s MEDIUMBLOB" % field.getName()
-                        numFields += 1
-                
-                ss += """)
-                         ENGINE=Innodb
-                         DEFAULT CHARSET=utf8;
-                      """
-                
-                # If more then one field exists to store, Then we store the table.
-                # Otherwise, It's a waste of space.
-                if numFields > 0: cursor.execute(ss)
-                    
-                
-            self.db.commit() # End transaction
-        except MySQLdb.OperationalError as e:
+            await self.commit() # End transaction
+        except OperationalError as e:
             self.notify.warning("Unknown error when creating tables, retrying:\n%s" % str(e))
-            self.db.rollback() # Revert transaction
+            await self.rollback() # Revert transaction
         except Exception as e:
             # Attempt to revert transaction.
-            try: self.db.rollback()
+            try: await self.rollback()
             except: pass
             
             # Output our error.
-            traceback.print_exc()
-            
-    def addToAccountServer(self, key, value):
+            traceback.print_exception(e)
+        finally:
+            await cursor.close()
+        
+    async def load(self, doId):
         """
-        Add a value to our database storage, If we don't have one.
-        An exception will be raised.
+        Safely loads the data from database using a mutex lock,
+        so the process is thread safe...
         """
-        if not self.hasAccountServer():
-            raise Exception("Tried to add value to account server, But we don't have one!")
-            
-        cursor = self.db.cursor()
+
+        with self._mutex_lock:
+            return await self.handle_load(doId)
+        
+    async def handle_load(self, doId):
+        """
+        Loads the data from database to memory safely.
+        """
+
+        cursor = self.get_dict_cursor()
         try:
-            self.db.begin() # Start transaction
+            if not await self.exists(doId):
+                return None # If the doId doesn't exist. Just return nothing.
+                
+            # Check our databases dc object table. 
+            await cursor.execute("Show tables like 'DCObject';")
+            if not cursor.rowcount:
+                print("Can't load a database object because the object table is missing!")
+                return None # If the table doesn't exist. Just return the default.
+            
+            await cursor.execute("SELECT * FROM DCObject where DoId=%s", (doId,))
+            data = await cursor.fetchone()
+            if not data: 
+                print("Can't load a database object because the object does not exist!")
+                return None # If we got no result, There is no objects.
+                
+            doId = data["DoId"]
+            UUID = uuid.UUID(data["UUID"])
+            dc_hash = data["DCHash"]
+            field_data = data["FieldData"]
+            
+            # Prepare to handle the stored field data.
+            fields = {}
+            
+            dg = Datagram(field_data)
+            di = DatagramIterator(dg)
+            
+            # Extract DcObjectType from the fields.
+            dc_object_type_field_name = di.get_string()
+            dclass_name = di.get_string()
+            fields[dc_object_type_field_name] = dclass_name
+            
+            # Load our dclass to unpack the fields.
+            dclass = self.dc.get_class_by_name(dclass_name)
+            if not dclass:
+                print("Can't load a database object because the objects dclass does not exist!")
+                return None # If we got no result, There is no valid class.
+                
+            # Unpack all of our fields.
+            count = di.get_uint32()
+            for i in range(0, count):
+                field_name = di.get_string()
+                field = dclass.get_field_by_name(field_name)
+                if not field: continue
+                
+                packer = DCPacker()
+                packer.set_unpack_data(di.get_remaining_bytes())
+                packer.begin_unpack(field)
+                try:
+                    value = field.unpack_args(packer)
+                except Exception as e:
+                    value = None
+                finally:
+                    packer.end_unpack()
+                
+                di.skip_bytes(packer.get_num_unpacked_bytes())
+                
+                fields[field_name] = value
+                
+            # Create our Database Object.
+            do = DatabaseObject(self.manager, doId, UUID, dclass)
+            # Set our fields!
+            do.setFields(fields)
+            return do
+        except OperationalError as e:
+            pass
+        except Exception as e:
+            # Output our error.
+            traceback.print_exception(e)
+        finally:
+            await cursor.close()
+            
+        return None
+        
+    async def save(self, do):
+        """
+        Safely saves the data to database using a mutex lock,
+        so the process is thread safe...
+        """
+
+        with self._mutex_lock:
+            await self.handle_save(do)
+        
+    async def handle_save(self, do):
+        """
+        Dumps the data from memory out to database safely.
+        """
+        
+        cursor = self.get_cursor()
+        try:
+            await self.begin() # Start transaction
             
             # Check our "database server" accounts table. 
-            cursor.execute("Show tables like 'accounts';")
+            await cursor.execute("Show tables like 'DCObject';")
             if not cursor.rowcount:
-                self.db.rollback() # Revert transaction
-                raise Exception("Tried to add value to account server, But the table for our accounts doesn't exist!")
+                await self.rollback() # Revert transaction
+                raise Exception("Tried to add database object to database, But the table for our objects doesn't exist!")
                 return
                 
-            if self.getFromAccountServer(key) == value:
-                raise Exception("Tried to add value to account server, But the table for this account already exists!")
-                return
-
-            cursor.execute("INSERT INTO accounts (accountName, doId) VALUES (%s, %s)", (key, value))
+            dg = Datagram()
+            di = DatagramIterator(dg)
             
-            self.db.commit() # End transaction
-        except MySQLdb.OperationalError as e:
-            self.db.rollback() # Revert transaction
+            fields = do.getFields()
+            
+            # Manually save this field only.
+            dg.add_string("DcObjectType")
+            dclass_name = fields.get("DcObjectType", do.dclass.get_name())
+            dg.add_string(dclass_name)
+            if "DcObjectType" in fields:
+                del fields["DcObjectType"]
+            
+            # Extract all of the database fields.
+            db_fields = {}
+            for fieldName, value in fields.items():
+                field = do.dclass.get_field_by_name(fieldName)
+                if not field or not field.is_db():
+                    continue
+                if field.as_molecular_field():
+                    continue
+                
+                db_fields[field] = value
+            
+            # Pack all of the database fields.
+            dg.add_uint32(len(db_fields))
+            for field, value in db_fields.items():
+                packer = DCPacker()
+                # Pack the fields name.
+                packer.raw_pack_string(field.get_name())
+                # Pack the args to the field.
+                packer.begin_pack(field)
+                if value != None:
+                    field.pack_args(packer, value)
+                else:
+                    packer.pack_default_value()
+                packer.end_pack()
+                
+                # Append the packed data to our Datagram.
+                dg.append_data(packer.get_bytes())
+                
+            # Get all of our field data as a binary string.
+            fieldData = di.get_remaining_bytes()
+            
+            # Save our DC Object.
+            if not await self.exists(do.doId):
+                # Create a new DC Object entry in our database.
+                cmd = f"INSERT INTO DCObject (DoId, UUID, DCHash, FieldData) VALUES ({do.doId}, {str(do.uuId)}, {self.dc_hash}, %%s);"
+                await cursor.execute(cmd, (fieldData,))
+            else:
+                # Update the existing entry in our database.
+                cmd = f"UPDATE DCObject SET FieldData=%%s WHERE DoId={do.doId};"
+                await cursor.execute(cmd, (fieldData,))
+                cmd = f"UPDATE DCObject SET DCHash={self.dc_hash} WHERE DoId={do.doId};"
+                await cursor.execute(cmd, ())
+            
+            await self.commit() # End transaction
+        except OperationalError as e:
+            await self.rollback() # Revert transaction
         except Exception as e:
-            self.db.rollback() # Revert transaction
+            await self.rollback() # Revert transaction
             
             # Output our error.
-            traceback.print_exc()
+            traceback.print_exception(e)
+        finally:
+            await cursor.close()
         
-    def getFromAccountServer(self, key):
+    async def exists(self, doId):
         """
-        Get the value of a key in our database storage.
-        If we don't have a storage, We always return None.
+        Return if the specified doId exists in the database.
         """
-        if not self.hasAccountServer(): 
-            return None
-
-        cursor = MySQLdb.cursors.DictCursor(self.db)
+        
+        data = {}
+        
+        cursor = self.get_dict_cursor()
         try:
-            # Check our "database server" accounts table. 
-            cursor.execute("Show tables like 'accounts';")
-            if not cursor.rowcount: return None
+            # Check our databases dc object table. 
+            await cursor.execute("Show tables like 'DCObject';")
+            if not cursor.rowcount: return False
             
-            cursor.execute("SELECT doId FROM accounts where accountName=%s", (key,))
-            res = cursor.fetchone()
-            
-            if not res: return None
-            return res["doId"]
-        except MySQLdb.OperationalError as e:
+            await cursor.execute("SELECT UUID FROM DCObject where DoId=%s", (doId,))
+            data = await cursor.fetchone()
+            if not data: data = {}
+        except OperationalError as e:
             pass
         except Exception as e:
             # Output our error.
-            traceback.print_exc()
-    
-    def inAccountServer(self, key):
+            traceback.print_exception(e)
+        finally:
+            await cursor.close()
+            
+        return data.get("UUID", None) != None
+        
+    async def get_next_doId(self):
         """
-        Return if a key is within' our databases storage.
-        If we don't have a storage, This is always False.
-        """
-        if not self.hasAccountServer(): 
-            return False
-
-        return self.getFromAccountServer(key) != None
-    
-    def hasAccountServer(self):
-        """
-        Check if we have a file or server for account database storage.
+        Get the next open doId for the backend we're using.
         """
         
-        if not self.db: return False
-
-        cursor = self.db.cursor()
+        doId = 100000000
+        
+        cursor = self.get_dict_cursor()
         try:
-            # Check our "database server" accounts table. 
-            cursor.execute("Show tables like 'accounts';")
-            if cursor.rowcount: return True
-        except MySQLdb.OperationalError as e:
+            # Check our databases dc object table. 
+            await cursor.execute("Show tables like 'DCObject';")
+            
+             # If the table doesn't exist. Just return the default.
+            if cursor.rowcount:
+                await cursor.execute("SELECT * FROM DCObject")
+                data = await cursor.fetchall() # If we got no result, There is no objects.
+                if data: doId = 100000000 + len(data) # Add the number of objects to the base id.
+        except OperationalError as e:
             pass
         except Exception as e:
             # Output our error.
-            traceback.print_exc()
+            traceback.print_exception(e)
+        finally:
+            await cursor.close()
             
-        return False
+        return doId
         
-    def __unpackValue(self, value=None, field=None, dgi=None):
+    def __unpack_value(self, value=None, field=None, dgi=None):
         if isinstance(value, str): # Make sure we're working with a bytes object.
             value = value.encode("utf-8")
             
@@ -670,90 +507,26 @@ class DatabaseBackendMySQL(DatabaseBackend):
             value = ()
             size = dgi.getUint32()
             for i in range(0, size):
-                value += (self.__unpackValue(field=field, dgi=dgi),)
+                value += (self.__unpack_value(field=field, dgi=dgi),)
         elif typeCode == self.T_LIST:
             value = []
             size = dgi.getUint32()
             for i in range(0, size):
-                value.append(self.__unpackValue(field=field, dgi=dgi))
+                value.append(self.__unpack_value(field=field, dgi=dgi))
         elif typeCode == self.T_DICT:
             value = {}
             size = dgi.getUint32()
             for i in range(0, size):
                 # Dicts have both an key and a value. We pack them one after another.
-                key = self.__unpackValue(field=field, dgi=dgi)
-                item = self.__unpackValue(field=field, dgi=dgi)
+                key = self.__unpack_value(field=field, dgi=dgi)
+                item = self.__unpack_value(field=field, dgi=dgi)
                 value[key] = item
         else:
-            print("Failed to unpack unknown typecode for field '%s'!" % (field.getName()))
+            print(f"Failed to unpack unknown typecode for field '{field.getName()}'!")
 
         return value
         
-    def handleLoad(self, doId):
-        """
-        Loads the data from database to memory safely.
-        """
-
-        cursor = MySQLdb.cursors.DictCursor(self.db)
-        try:
-            if not self.exists(doId):
-                return None # If the doId doesn't exist. Just return nothing.
-                
-            # Check our databases dc object table. 
-            cursor.execute("Show tables like 'objects';")
-            if not cursor.rowcount:
-                print("Can't load a database object because the object table is missing!")
-                return None # If the table doesn't exist. Just return the default.
-            
-            cursor.execute("SELECT * FROM objects where doId=%s", (doId,))
-            objData = cursor.fetchone()
-            if not objData: 
-                print("Can't load a database object because the object does not exist!")
-                return None # If we got no result, There is no objects.
-            
-            dcClassName = objData["dcClass"]
-            dcClass = self.dc.getClassByName(dcClassName)
-            if not dcClass:
-                print("Can't load a database object because the objects dcclass does not exist!")
-                return None # If we got no result, There is no valid class.
-
-            # Create our Database Object.
-            do = DatabaseObject(self.manager, objData["doId"], uuid.UUID(objData["uuId"]), dcClass)
-            
-            ss = "SELECT * FROM %s_fields where doId=%%s" % (dcClassName)
-            cursor.execute(ss, (doId,))
-            res = cursor.fetchone()
-            if not res:
-                print("Can't load a database object because the object does not have fields!")
-                return None # If we got no result, There is no valid fields.
-            
-            del res["doId"] # This isn't needed or used here.
-            
-            fields = {}
-            
-            # Go through all the results and unpack them.
-            for fieldName, value in res.items():
-                field = dcClass.getFieldByName(fieldName)
-                if not field: continue
-                
-                # Unpack our field.
-                value = self.__unpackValue(value=value, field=field)
-                
-                fields[fieldName] = value 
-                
-            # Set our fields!
-            do.setFields(fields)
-            
-            return do
-        except MySQLdb.OperationalError as e:
-            pass
-        except Exception as e:
-            # Output our error.
-            traceback.print_exc()
-            
-        return None
-        
-    def __packValue(self, value, field, root=True):
+    def __pack_value(self, value, field, root=True):
         dg = Datagram()
         dgi = DatagramIterator(dg)
         
@@ -763,7 +536,7 @@ class DatabaseBackendMySQL(DatabaseBackend):
                 packer = DCPacker()
                 packer.setUnpackData(valueData)
                 packer.beginUnpack()
-                blob = self.__packValue(packer.unpackArgs(), field, root=False) # Specially pack the value for our interest.
+                blob = self.__pack_value(packer.unpackArgs(), field, root=False) # Specially pack the value for our interest.
                 packer.endUnpack()
                 # Append the packed data to our dg.
                 dg.appendData(blob)
@@ -792,267 +565,200 @@ class DatabaseBackendMySQL(DatabaseBackend):
             dg.addUint8(self.T_TUPLE)
             dg.addUint32(len(value))
             for i in range(0, len(value)):
-                blob = self.__packValue(value[i], field, root=False)
+                blob = self.__pack_value(value[i], field, root=False)
                 # Append the packed data to our dg.
                 dg.appendData(blob)
         elif isinstance(value, list):
             dg.addUint8(self.T_LIST)
             dg.addUint32(len(value))
             for i in range(0, len(value)):
-                blob = self.__packValue(value[i], field, root=False)
+                blob = self.__pack_value(value[i], field, root=False)
                 # Append the packed data to our dg.
                 dg.appendData(blob)
         elif isinstance(value, dict):
             dg.addUint8(self.T_DICT)
             dg.addUint32(len(value))
             for i, j in value.items():
-                keyBlob = self.__packValue(i, field, root=False)
-                valueBlob = self.__packValue(k, field, root=False)
+                keyBlob = self.__pack_value(i, field, root=False)
+                valueBlob = self.__pack_value(k, field, root=False)
                 # Append the packed data to our dg.
                 dg.appendData(keyBlob)
                 dg.appendData(valueBlob)
         else:
-            print("Failed to pack value '%s' for %s!" % (value, field.getName()))
+            print(f"Failed to pack value '{value}' for {field.getName()}!")
             dg.addUint8(self.T_NONE)
 
         value = dgi.getRemainingBytes() # .decode("latin-1")
         return value
-        
-    def handleSave(self, do):
-        """
-        Dumps the data from memory out to database safely.
-        """
-        
-
-        cursor = self.db.cursor()
-        try:
-            self.db.begin() # Start transaction
-            
-            # Check our "database server" accounts table. 
-            cursor.execute("Show tables like 'objects';")
-            if not cursor.rowcount:
-                self.db.rollback() # Revert transaction
-                raise Exception("Tried to add database object to database, But the table for our objects doesn't exist!")
-                return
-            
-            if not self.exists(do.doId):
-                # Create the dc object handler for our newly saved database object.
-                cursor.execute("INSERT INTO objects (dcClass, doId, uuId) VALUES (%s, %s, %s);", (do.dclass.getName(), do.doId, str(do.uuId)))
-                
-                # Create the fields table for our newly handled dc object and fill them.
-                ss = "INSERT INTO %s_fields (doId) VALUES (%%s);" % (do.dclass.getName())
-                cursor.execute(ss, (do.doId,))
-                
-                # Go over all our fields and save them all into our fields.
-                for fieldName, value in do.getFields().items():
-                    field = do.dclass.getFieldByName(fieldName)
-                    if not field or not field.isDb():
-                        continue
-                    value = self.__packValue(value, field)
-                    # Some types of value need different packing then others.
-                    if isinstance(value, str):
-                        fs = "UPDATE %s_fields SET %s='%s' WHERE doId=%s;" % (do.dclass.getName(), fieldName, MySQLdb.converters.escape_string(value), str(do.doId))
-                        cursor.execute(fs)
-                    else:
-                        fs = "UPDATE %s_fields SET %s=%%s WHERE doId=%s;" % (do.dclass.getName(), fieldName, str(do.doId))
-                        cursor.execute(fs, (value,))
-            else:
-                # Just update and save our fields!
-                for fieldName, value in do.getFields().items():
-                    field = do.dclass.getFieldByName(fieldName)
-                    if not field or not field.isDb():
-                        continue
-                    value = self.__packValue(value, field)
-                    # Some types of value need different packing then others.
-                    if isinstance(value, str):
-                        fs = "UPDATE %s_fields SET %s='%s' WHERE doId=%s;" % (do.dclass.getName(), fieldName, value, str(do.doId))
-                        cursor.execute(fs)
-                    else:
-                        fs = "UPDATE %s_fields SET %s=%%s WHERE doId=%s;" % (do.dclass.getName(), fieldName, str(do.doId))
-                        cursor.execute(fs, (value,))
-                
-            
-            self.db.commit() # End transaction
-        except MySQLdb.OperationalError as e:
-            self.db.rollback() # Revert transaction
-        except Exception as e:
-            self.db.rollback() # Revert transaction
-            
-            # Output our error.
-            traceback.print_exc()
-        
-    def exists(self, doId):
-        """
-        Return if the specified doId exists in the database.
-        """
-
-        cursor = MySQLdb.cursors.DictCursor(self.db)
-        try:
-            # Check our databases dc object table. 
-            cursor.execute("Show tables like 'objects';")
-            if not cursor.rowcount: return False
-            
-            cursor.execute("SELECT uuId FROM objects where doId=%s", (doId,))
-            res = cursor.fetchone()
-            
-            if not res: return False
-            return res.get("uuId", None) != None
-        except MySQLdb.OperationalError as e:
-            pass
-        except Exception as e:
-            # Output our error.
-            traceback.print_exc()
-            
-        return False
-        
-    def getNextDoId(self):
-        """
-        Get the next open doId for the backend we're using.
-        """
-        cursor = MySQLdb.cursors.DictCursor(self.db)
-        try:
-            # Check our databases dc object table. 
-            cursor.execute("Show tables like 'objects';")
-            if not cursor.rowcount: return 10000000 # If the table doesn't exist. Just return the default.
-            
-            cursor.execute("SELECT * FROM objects")
-            res = cursor.fetchall()
-            
-            if not res: return 10000000 # If we got no result, There is no objects.
-            return 10000000 + len(res) # Add the number of objects to the base id.
-        except MySQLdb.OperationalError as e:
-            pass
-        except Exception as e:
-            # Output our error.
-            traceback.print_exc()
-            
-        return 10000000
 
 class DatabaseManager:
-    def __init__(self, dbss):
-        # Database Server
-        self.dbss = dbss
-        
+    def __init__(self, dc):
         # DC File
-        self.dc = self.dbss.dc
+        self.dc = dc
         
         # Cached DBObjects
         self.cache = {}
         
-        # DBS Objects
-        self.dcObjectTypes = self.dbss.dcObjectTypes
-        self.dcObjectTypeFromName = self.dbss.dcObjectTypeFromName
-        
         # Get our Panda3D Virtual File System, And keep a reference.
         self.vfs = VirtualFileSystem.getGlobalPtr()
         
-        # Get our backend.
-        self.backend = None
-        self.backendName = ConfigVariableString('database-backend', "raw").getValue()
-        if self.backendName == "raw":
-            self.backend = DatabaseBackendRaw(self)
-        elif self.backendName == "packed":
-            self.backend = DatabaseBackendPacked(self)
-        elif self.backendName == "json":
-            self.backend = DatabaseBackendJSON(self)
-        elif self.backendName == "sql":
-            self.backend = DatabaseBackendMySQL(self)
-        else: # Default to raw.
-            self.backend = DatabaseBackendRaw(self)
+        self.database_channel_from_dclass_name = {
+            "Account": ACCOUNT_DB_CHANNEL_ID,
+            "DistributedAvatar": AVATAR_DB_CHANNEL_ID,
+            "DistributedPlayer": AVATAR_DB_CHANNEL_ID,
+        }
         
-    def createDatabaseObject(self, dcObjectType, fields={}):
+        self.host = ConfigVariableString("mysql-host", "localhost").getValue()
+        self.port = ConfigVariableInt("mysql-port", 3306).getValue()
+        self.user = ConfigVariableString("mysql-user", "").getValue()
+        self.passwd = ConfigVariableString("mysql-passwd", "").getValue()
+        
+        # Get the branch flavor for use with our databases.
+        db_salt = ""
+        if __dev__:
+            db_salt = ConfigVariableString("dev-branch-flavor", "").getValue()
+            if db_salt:
+                db_salt = db_salt + '_'
+        
+        # Get our language for any language specific database
+        language = ConfigVariableString("language", "english").getValue()
+        
+        # Get the corresponding default db name based on the language
+        db_lang = ""
+        if language == 'castillian':
+            db_lang = "es_"
+        elif language == "japanese":
+            db_lang = "jp_"
+        elif language == "german":
+            db_lang = "de_"
+        elif language == "french":
+            db_lang = "french_"
+        elif language == "portuguese":
+            db_lang = "br_"
+            
+        # For now, We assume the default db name is for Toontown by default.
+        default_db_name = ConfigVariableString("sql-default-db", "toontownTopDb").getValue()
+        
+        self.databases = {}
+        self.databases[DEFAULT_DB_CHANNEL_ID] = DCDatabase(self, host, port, user, passwd, f"{db_salt}{db_lang}{default_db_name}")
+        self.databases[ACCOUNT_DB_CHANNEL_ID] = DCDatabase(self, host, port, user, passwd, f"{db_salt}{db_lang}accounts")
+        self.databases[AVATAR_DB_CHANNEL_ID] = DCDatabase(self, host, port, user, passwd, f"{db_salt}{db_lang}avatars")
+        #self.databases[AVATAR_FRIENDS_DB_CHANNEL_ID] = FriendDatabase(host, port, user, passwd, f"{db_salt}{db_lang}avatar_friends")
+        self.databases[AVATAR_ACCESSORIES_DB_CHANNEL_ID] = DCDatabase(self, host, port, user, passwd, f"{db_salt}{db_lang}avatar_accessories")
+        self.databases[AWARDS_DB_CHANNEL_ID] = DatabaseSQL(host, port, user, passwd, f"{db_salt}{db_lang}awards")
+        self.databases[CODE_REDEMPTION_DB_CHANNEL_ID] = DatabaseSQL(host, port, user, passwd, f"{db_salt}{db_lang}code_redemption")
+        self.databases[GUILDS_DB_CHANNEL_ID] = DatabaseSQL(host, port, user, passwd, f"{db_salt}{db_lang}guilds")
+        self.databases[HOLIDAY_SCHEDULES_DB_CHANNEL_ID] = DatabaseSQL(host, port, user, passwd, f"{db_salt}{db_lang}holidayschedules")
+        self.databases[STATUS_DB_CHANNEL_ID] = DatabaseSQL(host, port, user, passwd, f"{db_salt}{db_lang}status")
+        
+    async def initialize(self):
+        for channel, db in self.databases.items():
+            await db.connect()
+            
+    async def create_dc_object(self, dclass, fields={}):
         """
-        Create a database object with the dclass and default fields
+        Create a DC database object with the dclass, fields with default values
+        and any manually specified values for fields.
         """
         
-        # We look for the dclass by getting it from our dc object type dict.
-        dclass = self.dcObjectTypes.get(dcObjectType, None)
-        if not dclass:
-            raise ValueError(dcObjectType)
-
-        # Get the next available doId.
-        doId = self.backend.getNextDoId()
-
+        if not dclass: return None
+        
+        assert(dclass.get_field_by_name("DcObjectType") != None, f"Tried to create a DC Object in our databases but it's missing the 'DcObjectType' field!")
+        
+        time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
         # Generate a unique identifier for the database object.
         m = hashlib.md5()
-        m.update(("%s-%d-%s" % (str(dclass.getName()), doId, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))).encode('utf-8'))
-
+        m.update(f"{dclass.get_name()}{doId}{time_str}".encode('utf-8'))
+        
         doUuId = uuid.UUID(m.hexdigest(), version=4)
-
-        # We generate the DatabaseObject
+        
+        # Get the next available doId.
+        doId = await self.get_next_doId()
+        
+        # Create the DatabaseObject.
         do = DatabaseObject(self, doId, doUuId, dclass)
         
         # We set default values
         packer = DCPacker()
-        for n in range(dclass.getNumInheritedFields()):
-            field = dclass.getInheritedField(n)
-            if field.isDb():
-                packer.setUnpackData(field.getDefaultValue())
-                packer.beginUnpack(field)
-                do.fields[field.getName()] = field.unpackArgs(packer)
-                packer.endUnpack()
-                
-                # Unpack our default value then insert it into our dos fields.
-                #value = do.unpackField(field.getName(), field.getDefaultValue())
-                #do.fields[field.getName()] = value #do.packField(field.getName(), value)
+        for n in range(dclass.get_num_inherited_fields()):
+            field = dclass.get_inherited_field(n)
+            if not field.is_db(): continue
+
+            packer.set_unpack_data(field.get_default_value())
+            packer.begin_unpack(field)
+            do.fields[field.get_name()] = field.unpack_args(packer)
+            packer.end_unpack()
                 
         # Now we set the fields to the ones we got early.
-        for fieldName, *values in fields.items():
-            field = dclass.getFieldByName(fieldName)
+        for field_name, *values in fields.items():
+            field = dclass.get_field_by_name(field_name)
+            if not field:
+                continue
             
-            if field.asAtomicField():
-                do.fields[field.getName()] = values
+            if field.as_atomic_field():
+                do.fields[field_name] = values
                 
-            elif field.asMolecularField():
-                raise Exception("No.")
+            elif field.as_molecular_field():
+                continue
                 
-            elif field.asParameter():
+            elif field.as_parameter():
                 if len(values) != 1:
                     raise Exception("Arg count mismatch")
                     
-                do.fields[field.getName()] = values[0]
+                do.fields[field_name] = values[0]
             else:
-                print("Skipping field '%s' for saving!" % (field.getName()))
-
-        # Set our DC Object Type if we have it!
-        if dclass.getName() in list(self.dcObjectTypeFromName.keys()):
-            do.fields["DcObjectType"] = dclass.getName()
-
-        # We save the object
-        self.saveDatabaseObject(do)
+                print(f"Skipping field '{field_name}' for saving!")
+        
+        # Save the newly created DC database object.
+        await self.save_dc_object(do)
+        
         return do
         
-    def createDatabaseObjectFromName(self, dclassName, fields={}):
-        # We look for the dclass and make sure it exists.
-        if not self.dc.getClassByName(dclassName):
-            raise NameError(dclassName)
+    async def save_dc_object(self, do):
+        if not do: return
         
-        # Make sure the dcclass can be stored in our database.
-        # Any dcclass without a dc object type, Can not be stored.
-        if not dclassName in list(self.dcObjectTypeFromName.keys()):
-            raise NameError(dclassName)
+        # Get the channel for saving the DC database object.
+        db_channel = self.database_channel_from_dclass_name.get(do.dclass.get_name(), DEFAULT_DB_CHANNEL_ID)
+        # Get the database from the channel.
+        db = self.databases.get(db_channel, None)
+        if not db:
+            raise Exception("Failed to save dc object to a database!")
+            return
         
-        # Create a database object from the type we caculated.
-        dcObjectType = self.dcObjectTypeFromName[dclassName]
-        return self.createDatabaseObject(dcObjectType, fields=fields)
+        await db.save(do)
         
-    def hasDatabaseObject(self, doId):
+    async def load_dc_object(self, doId):
         """
-        Check if a database object exists.
+        Load a DC database object by its id,
+        If it doesn't exist we return None.
         """
-        return self.backend.exists(doId)
-        
-    def saveDatabaseObject(self, do):
-        """
-        Save a database object
-        """
-        self.backend.save(do)
 
-    def loadDatabaseObject(self, doId):
-        """
-        Load a database object by its id
-        """
-        if not doId in self.cache:
-            self.cache[doId] = self.backend.load(doId)
+        db_channel = await self.has_dc_object(doId)
+        if not db_channel:
+            return None
 
-        return self.cache[doId]
+        do = self.cache.get(doId, None)
+        if not do:
+            db = self.databases[db_channel]
+            do = await db.load(doId)
+            self.cache[doId] = do
+            
+        return do
+        
+    async def has_dc_object(self, doId):
+        """
+        Check if a DC database object exists,
+        If it does, return the database channel it exists in.
+        """
+        
+        if not doId: return 0
+        
+        for channel, db in self.databases.items():
+            if not isinstance(db, DCDatabase):
+                continue
+                
+            if await db.exists(doId): 
+                return channel
+            
+        return 0

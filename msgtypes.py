@@ -10,6 +10,17 @@ from toontown.ai.ToontownAIMsgTypes import *
 # Client Agents all register this channel for messages from the StateServer.
 CLIENTAGENT_ID = 4002
 
+ACCOUNT_DB_CHANNEL_ID = 4008 # Pirates stores ships here...?
+DEFAULT_DB_CHANNEL_ID = 4020 # Games like Toontown default to this.
+AVATAR_DB_CHANNEL_ID = 4021
+AVATAR_FRIENDS_DB_CHANNEL_ID = 4022 # Guess on ID
+AVATAR_ACCESSORIES_DB_CHANNEL_ID = 4023 # Unsure if this refers to accessories as an adjunct or for something else. Pets and Inventories are stored here?
+AWARDS_DB_CHANNEL_ID = 4024 # Guess on ID
+CODE_REDEMPTION_DB_CHANNEL_ID = 4025 # Guess on ID
+GUILDS_DB_CHANNEL_ID = 4026 # Guess on ID
+HOLIDAY_SCHEDULES_DB_CHANNEL_ID = 4027 # Guess on ID
+STATUS_DB_CHANNEL_ID = 4028 # Guess on ID
+
 # Database Server Object Types
 DBSERVER_INVALID_OBJECT_TYPE = 0
 DBSERVER_ACCOUNT_OBJECT_TYPE = 1

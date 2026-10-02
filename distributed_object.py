@@ -1,12 +1,17 @@
+import traceback
+
 from panda3d.core import Datagram
 from panda3d.direct import DCPacker
+
+from msgtypes import *
     
 class DistributedObject:
 
-    def __init__(self, doId, dclass, parentId, zoneId):
+    def __init__(self, doId, dclass, parentId=BAD_DO_ID, zoneId=BAD_ZONE_ID):
         self.doId = doId
         self.dclass = dclass
         self.parentId = parentId
+        self.ownerId = BAD_DO_ID
         self.zoneId = zoneId
         
         self.senders = []
@@ -24,7 +29,7 @@ class DistributedObject:
     def get(self, field, default=None):
         field = self.dclass.getFieldByName(field)
         if not field:
-            return None
+            return default
         return self.fields.get(field.getNumber(), default)
 
     def update(self, field, *values):
@@ -110,9 +115,14 @@ class DistributedObject:
         for n in range(molecular.getNumAtomics()):
             atomic = molecular.getAtomic(n)
             
-            packer.beginUnpack(atomic)
-            value = atomic.unpackArgs(packer)
-            packer.endUnpack()
+            try:
+                packer.beginUnpack(atomic)
+                value = atomic.unpackArgs(packer)
+                packer.endUnpack()
+            except Exception as e:
+                traceback.print_exception(e)
+                print(f"FATAL ERROR: Failed to unpack field '{field.getName()}'. See above for exception.")
+                break
             
             if not atomic.getNumber() in self.fields:
                 res.append(False)
@@ -120,21 +130,33 @@ class DistributedObject:
                 
             self.fields[atomic.getNumber()] = value
             res.append(True)
-
-        di.skipBytes(packer.getNumUnpackedBytes())
+            
+        try:
+            di.skipBytes(packer.getNumUnpackedBytes())
+        except:
+            return [False] * molecular.getNumAtomics()
         return res
         
     def receiveField(self, field, di):
-        if field.asMolecularField(): 
+        if field.asMolecularField():
             return self.receiveMolecularField(field, di)
         
         packer = DCPacker()
         packer.setUnpackData(di.getRemainingBytes())
-
-        packer.beginUnpack(field)
-        value = field.unpackArgs(packer)
-        packer.endUnpack()
-        di.skipBytes(packer.getNumUnpackedBytes())
+        
+        try:
+            packer.beginUnpack(field)
+            value = field.unpackArgs(packer)
+            packer.endUnpack()
+            di.skipBytes(packer.getNumUnpackedBytes())
+        except Exception as e:
+            traceback.print_exception(e)
+            print(f"FATAL ERROR: Failed to unpack field '{field.getName()}'. {packer.getNumUnpackedBytes()} bytes remain unpacked. See above for exception.")
+            value = None
+        
+        # Value failed to unpack for one reason or another.
+        if not value:
+            return False
         
         if not field.getNumber() in self.fields:
             return False

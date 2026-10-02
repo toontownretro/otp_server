@@ -244,58 +244,7 @@ class ClientAgent(ServerInterface, Server):
             print("Unexpected message on internal channels (code %d)" % (code))
         
     async def handle_datagram_for_client(self, client, channels, sender, code, datagram):
-        # If we have no avatar and this isn't from the DB server? Not for us.
-        if client.avatarId == 0 and not sender == DBSERVER_ID:
-            return
-            
-        if code == DBSERVER_GET_STORED_VALUES_RESP:
-            di = DatagramIterator(datagram)
-            
-            # Malformed response.
-            if di.getRemainingSize() <= 4:
-                return
-            
-            # Make sure we have a callback ready, If not. We can be assured this isn't for this client.
-            context = di.getUint32()
-            if not context in client.db_callbacks:
-                return
-            
-            await client.receive_database_request_object_resp(context, di)
-            return
-        elif code == DBSERVER_CREATE_STORED_OBJECT_RESP:
-            di = DatagramIterator(datagram)
-            
-            # Malformed response.
-            if di.getRemainingSize() <= 4:
-                return
-            
-            # Make sure we have a callback ready, If not. We can be assured this isn't for this client.
-            context = di.getUint32()
-            if not context in client.db_callbacks:
-                return
-
-            await client.receive_database_create_object_resp(context, di)
-            return
-        
-        # If we have no avatar or it's not for our avatar, Not a message for us.
-        if client.avatarId == 0 or not client.avatarId + (1 << 32) in channels:
-            return
-
-        if code == STATESERVER_OBJECT_UPDATE_FIELD:
-            await client.send_message(channels, sender, CLIENT_OBJECT_UPDATE_FIELD, datagram)
-        elif code == CLIENT_SET_FIELD_SENDABLE:
-            di = DatagramIterator(datagram)
-            doId = dgi.getUint32()
-            
-            # We do it like this because we don't add a size check.
-            fields = []
-            while di.getRemainingSize() >= 2:
-                fields.append(di.getUint16())
-            
-            # Set the clsend fields for object in our client.
-            await client.set_clsend_fields(doId, fields)
-        else:
-            print("Unexpected message on Puppet channel %d (code %d)" % (client.avatarId + (1 << 32), code))
+        return await client.handle_agent_datagram(channels, sender, code, datagram)
         
     def load_dna(self):
         # Get our Panda3D Virtual File System.

@@ -256,6 +256,52 @@ class StateServer(ServerInterface):
             do = self.objects[doId]
 
             await self.delete_object(do, self.channel)
+            
+        elif code == STATESERVER_QUERY_OBJECT_CHILDREN_LOCAL:
+            # Someone is asking info about children for an object.
+            parentId = di.getUint32()
+            context = di.getUint32()
+            
+            # We failed to find any children because we don't have the parent
+            # so just return early.
+            if not parentId in self.objects:
+                dg = Datagram()
+                dg.addUint32(parentId)
+                dg.addUint32(context)
+                await self.send_message([sender], self.channel, STATESERVER_QUERY_OBJECT_CHILDREN_LOCAL_DONE, dg)
+                return
+                
+            parent = self.objects[parentId]
+            children = await self.get_children_list(parent)
+            
+            # We failed to find any children because we don't have any or we got an error.
+            if not children:
+                dg = Datagram()
+                dg.addUint32(parentId) 
+                dg.addUint32(context)
+                await self.send_message([sender], self.channel, STATESERVER_QUERY_OBJECT_CHILDREN_LOCAL_DONE, dg)
+                return
+            
+            # Send the query response for all of the children.
+            for child in children:
+                if not child:
+                    continue
+                
+                dg = Datagram()
+                dg.addUint32(context)
+                dg.addUint32(child.parentId)
+                dg.addUint32(child.zoneId)
+                dg.addUint16(child.dclass.getNumber())
+                dg.addUint32(child.doId)
+                child.packRequired(dg)
+                child.packOther(dg)
+                await self.send_message([sender], self.channel, STATESERVER_QUERY_OBJECT_CHILDREN_RESP, dg)
+                
+            # Send we're done querying the children.
+            dg = Datagram()
+            dg.addUint32(parentId)
+            dg.addUint32(context)
+            await self.send_message([sender], self.channel, STATESERVER_QUERY_OBJECT_CHILDREN_LOCAL_DONE, dg)
                 
         elif code == STATESERVER_SHARD_REST:
             # Shard is going down.
@@ -274,6 +320,7 @@ class StateServer(ServerInterface):
             # The state server deletes the object, so we set the sender to ourself.
             for do in objects:
                 await self.delete_object(do, self.channel)
+
         elif code == SERVER_PING:
             sec = di.getUint32()
             usec = di.getUint32()
@@ -293,7 +340,7 @@ class StateServer(ServerInterface):
             return
                 
         if di.getRemainingSize():
-            raise Exception("Data remaining on stateserver: code %d has %d bytes left", (code, di.getRemainingBytes()))
+            print(f"[{self.name}] (ERROR): Data remaining on stateserver: {AIMsgId2Names[code][0]} has {di.getRemainingBytes()} bytes left.")
             
     async def handle_object_channel(self, channel, sender, code, di):
         assert channel in self.objects
@@ -427,7 +474,114 @@ class StateServer(ServerInterface):
             do.packOther(dg) # TODO: Should we check for airecv?
             
             await self.send_message([sender], self.channel, STATESERVER_QUERY_OBJECT_ALL_RESP, dg)
+
+        elif code == STATESERVER_OBJECT_QUERY_FIELD:
+            # Someone is asking info about a field for an object.
+            doId = di.getUint32()
+            fieldId = di.getUint16()
+            context = di.getUint32()
+            
+            do = self.objects.get(doId, None)
+            
+            # We don't have the object.
+            if not do:
+                dg = Datagram()
+                dg.addUint32(doId)
+                dg.addUint16(fieldId)
+                dg.addUint32(context)
+                dg.addUint8(0) # Failure
+                await self.send_message([sender], self.channel, STATESERVER_OBJECT_QUERY_FIELD_RESP, dg)
+                return
                 
+            field = do.dclass.getFieldByIndex(fieldId)
+            value = do.fields.get(fieldId, None)
+            
+            # We don't have the field or it doesn't have a valid value.
+            if not field or not value:
+                dg = Datagram()
+                dg.addUint32(doId)
+                dg.addUint16(fieldId)
+                dg.addUint32(context)
+                dg.addUint8(0) # Failure
+                await self.send_message([sender], self.channel, STATESERVER_OBJECT_QUERY_FIELD_RESP, dg)
+                return
+                
+            # Pack the field.
+            packer = DCPacker()
+            packer.beginPack(field)
+            packer.packObject(value)
+            packer.endPack()
+        
+            # Send we're done querying the field for the object.
+            dg = Datagram()
+            dg.addUint32(doId)
+            dg.addUint16(field.getNumber())
+            dg.addUint32(context)
+            dg.addUint8(1) # Success
+            dg.appendData(packer.getBytes())
+            await self.send_message([sender], self.channel, STATESERVER_OBJECT_QUERY_FIELD_RESP, dg)
+            
+        elif code == STATESERVER_OBJECT_QUERY_FIELDS:
+            doId = di.getUint32()
+            context = di.getUint32()
+            fieldIds = []
+            
+            # The rest of the datagram should be the field ids.
+            while di.getRemainingSize() >= 2:
+                fieldIds.append(di.getUint16())
+
+            do = self.objects.get(doId, None)
+            
+            # We don't have the object.
+            if not do:
+                dg = Datagram()
+                dg.addUint32(doId)
+                dg.addUint32(context)
+                dg.addUint8(0) # Failure
+                await self.send_message([sender], self.channel, STATESERVER_OBJECT_QUERY_FIELDS_RESP, dg)
+                return
+                
+            fields = {}
+            
+            allFound = True
+            for id in fieldIds:
+                field = do.dclass.getFieldByIndex(id)
+                value = do.fields.get(id, None)
+                
+                if not field or not value:
+                    allFound = False
+                    break
+                    
+                fields[field] = value
+                
+            # We don't have a field or a field doesn't have a valid value.
+            if not allFound:
+                dg = Datagram()
+                dg.addUint32(doId)
+                dg.addUint32(context)
+                dg.addUint8(0) # Failure
+                await self.send_message([sender], self.channel, STATESERVER_OBJECT_QUERY_FIELDS_RESP, dg)
+                return
+                
+            # Begin constructing our datagram.
+            dg = Datagram()
+            dg.addUint32(doId)
+            dg.addUint32(context)
+            dg.addUint8(1) # Success
+            
+            # Pack our fields.
+            packer = DCPacker()
+            for field, value in fields.items():
+                packer.beginPack(field)
+                packer.packObject(value)
+                packer.endPack()
+                
+                dg.addUint16(field.getNumber())
+                dg.appendData(packer.getBytes())
+                
+            # Send our response
+            await self.send_message([sender], self.channel, STATESERVER_OBJECT_QUERY_FIELDS_RESP, dg)
+        
         elif code == STATESERVER_OBJECT_SET_ZONE:
             # We are asked to move an object.
             parentId = di.getUint32()
@@ -499,12 +653,43 @@ class StateServer(ServerInterface):
             dg.addUint32(do.zoneId)
             
             await self.send_message([CLIENTAGENT_ID], sender, STATESERVER_OBJECT_SET_ZONE, dg)
+        elif code == STATESERVER_OBJECT_SET_OWNER_RECV:
+            channels = di.getUint64()
+            
+            # Get the owner doId and the account id (If it's provided)
+            ownerId = channels & 0xffffffff
+            channel2 = (channels >> 32) & 0xffffffff
+            
+            # If we don't have an object for the owner id, Just clear our owner instead.
+            if not ownerId or not ownerId in self.objects:
+                ownerId = 0
+            
+            # Update our objects owner, make sure to hold onto
+            # a copy of the old owner.
+            prevOwnerId = do.ownerId
+            do.ownerId = ownerId
+            
+            # Let anybody interested in us know our owner is changing.
+            channels = self.get_interested(do, sender)
+            if channels:
+                dg = Datagram()
+                dg.addUint32(do.doId)
+                dg.addUint32(do.ownerId)
+                dg.addUint32(prevOwnerId)
+                
+                await self.send_message(channels, sender, STATESERVER_OBJECT_CHANGE_OWNER_RECV, dg)
+            
+            # We announce to clients too, The ClientAgent will manage how.
+            dg = Datagram()
+            dg.addUint64((channel2 << 32) + ownerId)
+            
+            await self.send_message([CLIENTAGENT_ID], sender, STATESERVER_OBJECT_SET_OWNER_RECV, dg)
         else:
             print(f"[{self.name}]: Received unsupported message {code} on stateserver object channel from {sender}, Ignoring.")
             return
         
         if di.getRemainingSize():
-            raise Exception("Data remaining on stateserver: code %d has %d bytes left", (code, di.getRemainingBytes()))
+            print(f"[{self.name}] (ERROR): Data remaining on stateserver: {AIMsgId2Names[code][0]} has {di.getRemainingBytes()} bytes left.")
             
     def add_object(self, object):
         '''
@@ -721,6 +906,50 @@ class StateServer(ServerInterface):
         
         await self.send_message([CLIENTAGENT_ID], sender, STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER, dg)
         return True
+        
+    async def get_children(self, do):
+        """
+        Get all children of a distributed object.
+        This includes the children of those children also,
+        Creating a full graph.
+        """
+        
+        if not do: return None
+        
+        children = {}
+        if len(do.children) <= 0:
+            return children
+        
+        for childId in do.children:
+            if not childId in self.objects:
+                continue
+            
+            child = self.objects[childId]
+            children[childId] = (child, await self.get_children(child))
+            
+        return children
+        
+    async def get_children_list(self, do):
+        """
+        Get all children of a distributed object as list.
+        This is a flattened version of get_children().
+        """
+        
+        if not do: return None
+        
+        children = []
+        if len(do.children) <= 0:
+            return children
+        
+        for childId in do.children:
+            if not childId in self.objects:
+                continue
+
+            child = self.objects[childId]
+            children.append(child)
+            children += await self.get_children(child)
+            
+        return children
         
     def get_interested(self, do, sender):
         """
