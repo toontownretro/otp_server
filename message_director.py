@@ -3,6 +3,7 @@ from msgtypes import *
 
 import socket
 import struct
+import traceback
 
 class MDClient:
     def __init__(self, md, sock, addr):
@@ -33,8 +34,11 @@ class MDClient:
                 
             packet = self.buffer[2:length+2]
             self.buffer = self.buffer[length+2:]
-        
-            self.onDatagram(Datagram(bytes(packet)))
+            
+            try:
+                self.onDatagram(Datagram(bytes(packet)))
+            except Exception as e:
+                print("%sPACKET: %s\n" % ("".join(traceback.format_exception(e)), bytes(packet)))
 
     def onDatagram(self, dg):
         di = DatagramIterator(dg)
