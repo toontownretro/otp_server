@@ -1,6 +1,8 @@
-import asyncio, functools, socket, ssl, struct, time
+import asyncio, functools, os, socket, ssl, struct, time
 
-from panda3d.core import ConfigVariableInt, ConfigVariableBool, Datagram, DatagramIterator
+from panda3d.core import ConfigVariableInt, ConfigVariableBool, ConfigVariableString, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
+
+from panda3d.toontown import DNAStorage, loadDNAFileAI
 
 from central_logger import CentralLogger
 from connection import Server
@@ -41,6 +43,8 @@ class ClientAgent(ServerInterface, Server):
         # Special fields IDs (cache)
         self.setTalkFieldId = self.dc.getClassByName("TalkPath_owner").getFieldByName("setTalk").getNumber()
         
+        self.set_name("CLIENTAGENT")
+        
     @classmethod
     async def initialize(cls, addr, port, channel):
         return cls(addr, port, channel)
@@ -53,10 +57,11 @@ class ClientAgent(ServerInterface, Server):
             return False
             
         # Setup our information on the Message Director.
-        self.channel = channel
         await self.register_for_channel(self.channel)
         await self.register_for_channel(CLIENTAGENT_ID)
-        await self.set_connection_name("ClientAgent")
+        await self.set_connection_name(self.name)
+        
+        print(f"[{self.name}]: Connected and running on channel {self.channel}.")
         return True
         
     async def close_interface(self):
@@ -118,7 +123,24 @@ class ClientAgent(ServerInterface, Server):
     async def handle_internal_channel(self, sender, code, dg):
         di = DatagramIterator(dg)
         
-        if code in (STATESERVER_OBJECT_GENERATE_WITH_REQUIRED, STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER):
+        if code == SERVER_PING:
+            if di.getRemainingSize() <= 10:
+                return
+
+            sec = di.getUint32()
+            usec = di.getUint32()
+            url = di.getString()
+            channel = di.getUint32()
+            
+            # Respond
+            dg = Datagram()
+            dg.addUint32(sec)
+            dg.addUint32(usec)
+            dg.addString(url)
+            dg.addUint32(channel)
+            
+            await self.send_message([sender], self.channel, SERVER_PING, dg)
+        elif code in (STATESERVER_OBJECT_GENERATE_WITH_REQUIRED, STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER):
             parentId = di.getUint32()
             zoneId = di.getUint32()
             classId = di.getUint16()
@@ -211,7 +233,7 @@ class ClientAgent(ServerInterface, Server):
         elif code == STATESERVER_OBJECT_UPDATE_FIELD:
             # We are asked to update an object.
             
-            doId = di.getUint32()
+            doId = di.getUint32()
             
             if not doId in self.objects:
                 return
@@ -239,9 +261,8 @@ class ClientAgent(ServerInterface, Server):
         
             # Have all of our clients recieve our update for the object.
             await asyncio.gather(*coroutines)
-            
         else:
-            print("Unexpected message on internal channels (code %d)" % (code))
+            print(f"[{self.name}]: Unexpected message on internal channels (code {code})")
         
     async def handle_datagram_for_client(self, client, channels, sender, code, datagram):
         return await client.handle_agent_datagram(channels, sender, code, datagram)
@@ -299,10 +320,14 @@ class ClientAgent(ServerInterface, Server):
             # maybe use built instead?
             filepath = Filename(filename)
             vfs.resolveFilename(filepath, searchPath)
-            loadDNAFile(dnaStore, filepath)
+            loadDNAFileAI(dnaStore, str(filepath))
             
-        for visgroup in dnaStore.visGroups:
-            self.visgroups[int(visgroup.name)] = [int(i) for i in visgroup.visibles]
+        for i in range(0, dnaStore.getNumDNAVisGroupsAI()):
+            visgroup = dnaStore.getDNAVisGroupAI(i)
+            visibles = []
+            for j in range(0, visgroup.getNumVisibles()):
+                visibles.append(visgroup.getVisibleName(j))
+            self.visgroups[int(visgroup.name)] = visibles
             
     def load_namemaster(self):
         # Let's read our NameMaster
@@ -349,3 +374,29 @@ class ClientAgent(ServerInterface, Server):
         if self.__context >= (1 << 32):
             self.__context = 0
         return self.__context
+        
+'''
+if __name__ == "__main__":
+    async def main():
+        # Get the running loop inside an async function
+        loop = asyncio.get_running_loop()
+        
+        ca = await ClientAgent.initialize("0.0.0.0", ConfigVariableInt("msg-director-port", 6666).getValue(), ConfigVariableInt("client-agent-id", 20200000).getValue())
+        await ca.connect("127.0.0.1", ConfigVariableInt("msg-director-port", 6666).getValue())
+        
+        try:
+            loop.create_task(ca.server.serve_forever())
+        except asyncio.CancelledError:
+            pass
+        
+        while True:
+            try:
+                await ca.flush()
+                await asyncio.sleep(0)
+            except KeyboardInterrupt as e:
+                break
+            except Exception as e:
+                traceback.print_exception(e)
+            
+    asyncio.run(main())
+'''

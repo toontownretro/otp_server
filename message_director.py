@@ -385,6 +385,10 @@ class MessageDirector(Server):
         await self.start()
         return self
         
+    async def start(self):
+        await super().start()
+        print(f"[{self.name}]: Now directing on {self.addr}:{self.port}.")
+        
     async def handle_client(self, reader, writer):
         client = await self.client_cls.from_server(reader, writer)
         # Create a timeout task to boot the client if it doesn't do anything.
@@ -442,6 +446,7 @@ class MessageDirector(Server):
             await client.send_message(message)
         '''
         
+'''
 if __name__ == "__main__":
     async def main():
         # Get the running loop inside an async function
@@ -464,3 +469,4 @@ if __name__ == "__main__":
                 traceback.print_exception(e)
             
     asyncio.run(main())
+'''

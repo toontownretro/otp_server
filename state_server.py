@@ -973,7 +973,8 @@ class StateServer(ServerInterface):
             channels.remove(sender)
             
         return list(channels)
-        
+
+'''
 if __name__ == "__main__":
     async def main():
         ss = await StateServer.initialize("127.0.0.1", ConfigVariableInt("msg-director-port", 6666).getValue(), ConfigVariableInt("state-server-id", 20100000).getValue())
@@ -988,3 +989,4 @@ if __name__ == "__main__":
                 traceback.print_exception(e)
             
     asyncio.run(main())
+'''

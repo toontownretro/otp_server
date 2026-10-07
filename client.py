@@ -307,7 +307,7 @@ class Client(connection.Client):
 
         # Fill out our account fields that have no default value.
         fields = {"ACCOUNT_AV_SET": [0, 0, 0, 0, 0, 0,],
-                  "ACCOUNT_AV_SET_DEL": [,],
+                  "ACCOUNT_AV_SET_DEL": [],
                   "pirateAvatars": [0, 0, 0, 0, 0, 0,],
                   "HOUSE_ID_SET": [0, 0, 0, 0, 0, 0,],
                   "ESTATE_ID": 0,
@@ -321,11 +321,11 @@ class Client(connection.Client):
         self.db_callbacks[context] = (self.handle_login_2_db_resp, (tokenInfo, serverVersion, hashVal, validateDownload, wantMagicWords))
         await self.database_create_object("Account", fields, context)
             
-    async def handle_login_2_db_resp(self, object, args):
+    async def handle_login_2_db_resp(self, object, *args):
         if not object or not args:
             return
             
-        tokenInfo, serverVersion, hashVal, validateDownload, wantMagicWords = *args
+        tokenInfo, serverVersion, hashVal, validateDownload, wantMagicWords = args
         
         # These arguments are things we need from our token read response.
         returnCode = tokenInfo["returnCode"]
@@ -412,7 +412,7 @@ class Client(connection.Client):
 
         # Fill out our account fields.
         fields = {"ACCOUNT_AV_SET": [0, 0, 0, 0, 0, 0,],
-                  "ACCOUNT_AV_SET_DEL": [,],
+                  "ACCOUNT_AV_SET_DEL": [],
                   "pirateAvatars": [0, 0, 0, 0, 0, 0,],
                   "HOUSE_ID_SET": [0, 0, 0, 0, 0, 0,],
                   "ESTATE_ID": 0,
@@ -426,11 +426,11 @@ class Client(connection.Client):
         self.db_callbacks[context] = (self.handle_login_toontown_db_resp, (tokenInfo, serverVersion, hashVal, wantMagicWords))
         await self.database_create_object("Account", fields, context)
         
-    async def handle_login_toontown_db_resp(self, object, args):
+    async def handle_login_toontown_db_resp(self, object, *args):
         if not object or not args:
             return
 
-        tokenInfo, serverVersion, hashVal, wantMagicWords = *args
+        tokenInfo, serverVersion, hashVal, wantMagicWords = args
 
         # These arguments are things we need from our token read response.
         returnCode = tokenInfo["returnCode"]
@@ -550,11 +550,11 @@ class Client(connection.Client):
         self.db_callbacks[context] = (self.handle_create_avatar_db_resp, (contextId, avPosition))
         await self.database_create_object("DistributedToon", fields, context)
         
-    async def handle_create_avatar_db_resp(self, object, args):
+    async def handle_create_avatar_db_resp(self, object, *args):
         if not object or not args:
             return
             
-        contextId, avPosition = *args
+        contextId, avPosition = args
 
         # We save the avatar in the account
         accountAvSet[avPosition] = object.doId
@@ -954,7 +954,7 @@ class Client(connection.Client):
         dg = Datagram()
         dg.addUint32(parentId)
         dg.addUint32(zoneId)
-        await self.agent.send_message(([object.doId], self.agent.channel, STATESERVER_OBJECT_SET_ZONE, dg)
+        await self.agent.send_message([object.doId], self.agent.channel, STATESERVER_OBJECT_SET_ZONE, dg)
         
         # Toontown Game Specific Code
         
@@ -1102,8 +1102,8 @@ class Client(connection.Client):
             
         return True
             
-    async def load_avatar_list_db_resp(self, object, args):
-        context, pos, max_count = *args
+    async def load_avatar_list_db_resp(self, object, *args):
+        context, pos, max_count = args
         
         # If we didn't get an object. The avatar doesn't exist.
         # Let's remove the invalid avatar from the account.
@@ -1126,7 +1126,7 @@ class Client(connection.Client):
             return
         
         # Call our callback.
-        callback, args = *self.callbacks[context]
+        callback, args = self.callbacks[context]
         await callback(*args)
         
         # Remove the callback now that it's been called.
@@ -1198,8 +1198,8 @@ class Client(connection.Client):
         avatar.packOther(dg)
         await self.agent.send_message([20100000], avatar.doId, STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER, dg)
         
-    async def set_avatar_finish(self, object, args):
-        avPosition = *args
+    async def set_avatar_finish(self, object, *args):
+        avPosition = args
         
         self.avatar = object
         self.avatars[avPosition] = object
@@ -1288,7 +1288,7 @@ class Client(connection.Client):
             
         # Call our generate callback if we have one.
         if do.doId in self.generate_callbacks:
-            callback, args = *self.generate_callbacks[do.doId]
+            callback, args = self.generate_callbacks[do.doId]
             await callback(do, args)
             
         # Don't echo the message.
@@ -1417,7 +1417,7 @@ class Client(connection.Client):
         # TODO: Is the broadcast check required?
         
         interested = await self.has_interest(do.parentId, do.zoneId)
-        if not interested or (field.isOwnrecv() or not field.isBroadcast())
+        if not interested or (field.isOwnrecv() or not field.isBroadcast()):
             return
             
         # We generate the field update
@@ -1445,7 +1445,7 @@ class Client(connection.Client):
         object.doId = doId
         
         # Call our callback!
-        callback, args = *self.db_callbacks[context]
+        callback, args = self.db_callbacks[context]
         await callback(object, args)
         
         # These are no longer needed.
@@ -1495,7 +1495,7 @@ class Client(connection.Client):
             object.receiveField(field, di)
             
         # Call our callback!
-        callback, args = *self.db_callbacks[context]
+        callback, args = self.db_callbacks[context]
         await callback(object, args)
         
         # These are no longer needed.
