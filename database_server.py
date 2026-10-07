@@ -14,578 +14,631 @@ from panda3d.direct import DCPacker
 from database_manager import DatabaseManager
 from database_object import DatabaseObject
 from distributed_object import DistributedObject
+from server_interface import ServerInterface
 from msgtypes import *
 
-class DatabaseServer:
-    def __init__(self, otp):
-        # Main OTP
-        self.otp = otp
+class DatabaseServer(ServerInterface):
+    def __init__(self, channel):
+        super().__init__()
         
-        # DC File
-        self.dc = self.otp.dc
+        self.channel = channel
         
-        # Quick access for CA and MD 
-        self.clientAgent = self.otp.clientAgent
-        self.messageDirector = self.otp.messageDirector
-        self.stateServer = self.otp.stateServer
+        self.load_dc()
         
         # Dictionaries containing info relating to all of our DC Objects with the DcObjectType field.
-        self.dcObjectTypes = {}
-        self.dcObjectTypeFromName = {}
-        self.caculateDCObjects()
-        
-        # Get our Panda3D Virtual File System, And keep a reference.
-        self.vfs = VirtualFileSystem.getGlobalPtr()
+        self.dc_object_types = {}
         
         # Create our Database Manager. 
-        self.manager = DatabaseManager(self)
+        self.manager = DatabaseManager(self.dc)
         
         self.rngSeed = None
         self.secretFriendCodes = {}
         
-        self.databaseDirectory = os.path.normpath(os.path.expandvars(ConfigVariableString('database-directory', "database").getValue()))
+        self.set_name("DATABASESERVER")
+
+    @classmethod
+    async def initialize(cls, addr, port, channel):
+        self = cls(channel)
+        await self.connect(addr, port)
+        return self
         
-    def caculateDCObjects(self):
-        dcObjectCount = 0
+    async def connect(self, addr, port):
+        connected = await super().connect(addr, port)
         
-        # Fist let's check all classes at their base and store them.
-        # We don't want classes which inherited to have a different number then
-        # it's base class. So we parse child classes to their parents after.
-        for i in range(0, self.dc.getNumClasses()):
-            dcClass = self.dc.getClass(i)
-            for j in range(0, dcClass.getNumFields()):
-                field = dcClass.getField(j)
-                if field.getName() == "DcObjectType":
-                    dcObjectCount += 1
-                    self.dcObjectTypes[dcObjectCount] = dcClass
-                    self.dcObjectTypeFromName[dcClass.getName()] = dcObjectCount
-                    
-        
-        def isInheritedDcObjectClass(dcClass):
-            """
-            This function is will iterate the parents of a dc class
-            and return if the dc class inherits a dc class in our dc object types.
-            """
-            isDcObject = False
-            for j in range(0, dcClass.getNumParents()):
-                dcClassParent = dcClass.getParent(j)
-                isDcObject = dcClassParent.getName() in self.dcObjectTypeFromName
-                if not isDcObject and dcClassParent.getNumParents() > 0: # Check the parent' parents for if we are one too.
-                    isDcObject = isInheritedDcObjectClass(dcClassParent)
-                
-                if not isDcObject: # Don't even bother if we aren't one.
-                    continue
-                    
-            return isDcObject
-                   
-        # Now we just iterate the dc classes for if one inherits from one 
-        # of our confirmed dc classes to have a dc object type.
-        for i in range(0, self.dc.getNumClasses()):
-            dcClass = self.dc.getClass(i)
-            isDcObject = isInheritedDcObjectClass(dcClass)
-            if not isDcObject:
-                continue
+        # Failed to connect to the Message Director!
+        if not connected:
+            print(f"[{self.name}]: Failed to connect to the Message Director.")
+            return False
             
-            dcObjectCount += 1
-            self.dcObjectTypes[dcObjectCount] = dcClass
-            self.dcObjectTypeFromName[dcClass.getName()] = dcObjectCount
+        # Setup our information on the Message Director.
+        await self.register_for_channel(self.channel)
+        await self.set_connection_name(self.name)
+        
+        print(f"[{self.name}]: Connected and running on channel {self.channel}.")
+        return True
+        
+    async def close(self):
+        if self.closed:
+            return
             
-    def handle(self, channels, sender, code, datagram):
-        """
-        Handle a message
-        """
+        # Make sure to unregister our channel.
+        await self.unregister_for_channel(self.channel)
+        
+        # Close our connection.
+        await super().close()
+        
+    async def handle_lost_connection(self):
+        # If we lost connection, Then we'll just close the connection locally.
+        # We can't unregister any channels if it won't reach the Message Director.
+        #
+        # The Message Director will unregister us itself anyways, So no need to worry.
+        print(f"[{self.name}]: Lost connection to the Message Director.")
+        await super().close()
+        
+    async def receive_datagram(self, dg):
+        di = DatagramIterator(dg)
+        
+        # First check if the datagram has anything in it.
+        if not di.get_remaining_size() >= 1:
+            return
+            
+        # Get the amount of channels the datagram wants to be routed too.
+        count = di.get_uint8()
+        if count <= 0:
+            return
+            
+        # Extract all of the channels from the datagram.
+        if not di.get_remaining_size() >= 8 * count:
+            return
+        channels = set()
+        for _ in range(count):
+            channels.add(di.get_uint64())
+            
+        # Get the sender for the datagram and it's 'code' (Identifier for what type of datagram it is)
+        if not di.get_remaining_size() >= 10:
+            return
+        sender = di.get_uint64()
+        code = di.get_uint16()
+        
+        # Extract all of the remaining data into it's own datagram.
+        data = di.get_remaining_bytes()
+        dg = Datagram(bytes(data))
+        
+        # Iterate over all our channels and handle the datagram accordingly.
         for channel in channels:
-            if channel == DBSERVER_ID:
-                if code == DBSERVER_GET_STORED_VALUES:
-                    self.getStoredValues(sender, datagram)
-                    
-                elif code == DBSERVER_SET_STORED_VALUES:
-                    self.setStoredValues(sender, datagram)
-                    
-                elif code == DBSERVER_CREATE_STORED_OBJECT:
-                    self.createStoredObject(sender, datagram)
-                    
-                elif code == DBSERVER_DELETE_STORED_OBJECT:
-                    print("DBSERVER_DELETE_STORED_OBJECT")
-                    
-                elif code == DBSERVER_GET_ESTATE:
-                    self.getEstate(sender, datagram)
-                    
-                elif code == DBSERVER_MAKE_FRIENDS:
-                    self.makeFriends(sender, datagram)
-                    
-                elif code == DBSERVER_REQUEST_SECRET:
-                    print("DBSERVER_REQUEST_SECRET")
-                    self.requestSecret(sender, datagram)
-                    
-                elif code == DBSERVER_SUBMIT_SECRET:
-                    print("DBSERVER_SUBMIT_SECRET")
-                    self.submitSecret(sender, datagram)
-                    
-                else:
-                    raise Exception("Unknown message on DBServer channel: %d" % code)
-                    
-            if channel in self.manager.cache:
-                di = DatagramIterator(datagram)
-                do = self.manager.cache[channel]
+            di = DatagramIterator(dg)
+            
+            # Before we try to handle an object. Make sure we aren't recieving a stateserver message.
+            # If we are handling a stateserver message. Handle it!
+            if channel == self.channel:
+                await self.handle_internal_channel(sender, code, di)
+                continue
                 
-                if code == STATESERVER_OBJECT_UPDATE_FIELD:
-                    # We are asked to update a field
-                    doId = di.getUint32()
-                    fieldId = di.getUint16()
-                    
-                    # Is this sent to the correct object?
-                    if doId != do.doId:
-                        raise Exception("Object %d does not match channel %d" % (doId, do.doId))
-                    
-                    # We apply the update
-                    field = do.dclass.getFieldByIndex(fieldId)
-                    do.receiveField(field, di)
+            # Verify the channel/object exists before trying to handle a message from it.
+            if not channel in self.manager.cache:
+                continue
+                
+            # Process the object message.
+            await self.handle_object_channel(channel, sender, code, di)
+            
+    async def handle_internal_channel(self, sender, code, di):
+        if code == SERVER_PING:
+            await self.handle_ping(sender, di)
+        elif code == DBSERVER_GET_STORED_VALUES:
+            await self.handle_get_stored_values(sender, di)
+        elif code == DBSERVER_SET_STORED_VALUES:
+            await self.handle_set_stored_values(sender, di)
+        elif code == DBSERVER_CREATE_STORED_OBJECT:
+            await self.handle_create_stored_object(sender, di)
+        elif code == DBSERVER_DELETE_STORED_OBJECT:
+            print("DBSERVER_DELETE_STORED_OBJECT")
+        elif code == DBSERVER_GET_ESTATE:
+            await self.handle_get_estate(sender, di)
+        elif code == DBSERVER_MAKE_FRIENDS:
+            await self.handle_make_friends(sender, di)
+        elif code == DBSERVER_REQUEST_SECRET:
+            print("DBSERVER_REQUEST_SECRET")
+            #self.requestSecret(sender, datagram)
+        elif code == DBSERVER_SUBMIT_SECRET:
+            print("DBSERVER_SUBMIT_SECRET")
+            #self.submitSecret(sender, datagram)
+        else:
+            print(f"[{self.name}]: Received unsupported message {code} on internal channel from {sender}, Ignoring.")
+            return
+            
+    async def handle_object_channel(self, channel, sender, code, di):
+        do = self.manager.cache[channel]
         
-    def getStoredValues(self, sender, datagram):
+        if code == STATESERVER_OBJECT_UPDATE_FIELD:
+            # We are asked to update a field
+            doId = di.get_uint32()
+            fieldId = di.get_uint16()
+            
+            # Is this sent to the correct object?
+            if doId != do.doId:
+                raise Exception("Object %d does not match channel %d" % (doId, do.doId))
+            
+            # We apply the update
+            field = do.dclass.get_field_by_index(fieldId)
+            do.receiveField(field, di)
+            
+    async def handle_ping(self, sender, di):
+        """
+        Handles and returns a ping request sent from the sender.
+        """
+        
+        if di.get_remaining_size() < 12:
+            return
+            
+        sec = di.get_uint32()
+        usec = di.get_uint32()
+        url = di.get_string()
+        channel = di.get_uint32()
+        
+        # Respond
+        dg = Datagram()
+        dg.add_uint32(sec)
+        dg.add_uint32(usec)
+        dg.add_string(url)
+        dg.add_uint32(channel)
+        
+        await self.send_message([sender], self.channel, SERVER_PING, dg)
+            
+    async def handle_get_stored_values(self, sender, di):
         """
         Get the stored field values from the object specified in the datagram.
         """
-        di = DatagramIterator(datagram)
+        
+        if di.get_remaining_size() < 10:
+            return
         
         # Get the context.
-        context = di.getUint32()
+        context = di.get_uint32()
         
         # The doId we want to get the fields from.
-        doId = di.getUint32()
+        doId = di.get_uint32()
         
         # The number of fields we're going to search for.
-        numFields = di.getUint16()
+        num_fields = di.get_uint16()
         
         # Get all of the field names we want to work with!
-        fieldNames = []
-        for i in range(0, numFields):
-            fieldNames.append(di.getString())
+        field_names = []
+        for i in range(0, num_fields):
+            field_names.append(di.getString())
             
-        numFields = len(fieldNames)
+        num_fields = len(field_names)
         
         dg = Datagram()
         dg.addUint32(context) # Rain or shine. We want the context.
         dg.addUint32(doId) # They'll need to know what doId this was for!
-        dg.addUint16(numFields) # Send back the number of fields we searched for.
+        dg.addUint16(num_fields) # Send back the number of fields we searched for.
         
         # Add all of our field names.
-        for i in range(0, numFields):
-            dg.addString(fieldNames[i])
+        for i in range(0, num_fields):
+            dg.addString(field_names[i])
         
         # Make sure our database object even exists first.
-        if not self.manager.hasDatabaseObject(doId):
+        if not await self.manager.has_dc_object(doId):
             # Failed to get our object. So we just add our response code.
-            dg.addUint8(1)
+            dg.add_uint8(1)
             # Send out our response.
-            self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_GET_STORED_VALUES_RESP, dg)
+            await self.send_message([sender], self.channel, DBSERVER_GET_STORED_VALUES_RESP, dg)
             return
-            
-        dg.addUint8(0)
         
         # Load our database object.
-        do = self.manager.loadDatabaseObject(doId)
+        do = await self.manager.load_dc_object(doId)
+        if not do:
+            # Failed to get our object. So we just add our response code.
+            dg.add_uint8(1)
+            # Send out our response.
+            await self.send_message([sender], self.channel, DBSERVER_GET_STORED_VALUES_RESP, dg)
+            return
         
         values = []
         found = []
         
+        dg.add_uint8(0)
+        
         # Add our field values.
-        for i in range(0, numFields):
-            fieldName = fieldNames[i]
-            if fieldName in do.fields: # Success
-                values.append(do.packField(fieldName, do.fields[fieldName]).decode('ISO-8859-1'))
+        for i in range(0, num_fields):
+            field_name = field_names[i]
+            if field_name in do.fields: # Success
+                values.append(do.packField(field_name, do.fields[field_name]).decode('ISO-8859-1'))
                 found.append(True)
                 continue
             # Failure, The field doesn't exist.
-            #print("Couldn't find field %s for do %s!" % (fieldName, str(do.doId)))
+            #print("Couldn't find field %s for do %s!" % (field_name, str(do.doId)))
             values.append("DEADBEEF")
             found.append(False)
             
         # Add our values.
-        for i in range(0, numFields):
-            value = values[i]
-            dg.addString(value)
+        for i in range(0, num_fields):
+            dg.add_string(values[i])
         
         # Add the list of our found field values.
-        for i in range(0, numFields):
-            foundField = found[i]
-            dg.addUint8(foundField)
+        for i in range(0, num_fields):
+            dg.add_uint8(found[i])
 
         # Send out our response.
-        self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_GET_STORED_VALUES_RESP, dg)
+        await self.send_message([sender], self.channel, DBSERVER_GET_STORED_VALUES_RESP, dg)
         
-        # Generate our db object if needed!
-        if do.dclass.getName() in list(self.dcObjectTypeFromName.keys()):
-            if do.doId in self.stateServer.objects:
-                #print("%s object %d already exists in objects!" % (do.dclass.getName(), do.doId))
-                return
-            if do.doId in self.stateServer.dbObjects:
-                #print("%s object %d already exists in db objects!" % (do.dclass.getName(), do.doId))
-                return
-            #print("Creating %s db object with doId %d!" % (do.dclass.getName(), do.doId))
-            self.stateServer.dbObjects[do.doId] = DistributedObject(do.doId, do.dclass, 0, 0)
-        
-    def setStoredValues(self, sender, datagram):
+    async def handle_set_stored_values(self, sender, di):
         """
         Set the values of the fields for the object specified in the datagram.
         """
-        di = DatagramIterator(datagram)
+        
+        if di.get_remaining_size() < 8:
+            return
         
         # The doId we want to set the fields for.
-        doId = di.getUint32()
+        doId = di.get_uint32()
+        
+        # Make sure our database object even exists before
+        # we try and attempt to set fields.
+        if not await self.manager.has_dc_object(doId):
+            return
         
         # The number of fields we're going to set.
-        numFields = di.getUint32()
+        num_fields = di.get_uint32()
         
-        fieldNames = []
-        fieldValues = []
+        field_names = []
+        field_values = []
         
         # Get all of our field names.
-        for i in range(0, numFields):
-            fieldNames.append(di.getString())
+        for i in range(0, num_fields):
+            field_names.append(di.get_string())
         
         # Get all of our field values.
-        for i in range(0, numFields):
-            fieldValues.append(di.getString())
-            
-        # Make sure our database object even exists first.
-        if not self.manager.hasDatabaseObject(doId):
-            return
+        for i in range(0, num_fields):
+            field_values.append(di.get_string())
 
         # Load our database object.
-        do = self.manager.loadDatabaseObject(doId)
+        do = await self.manager.load_dc_object(doId)
         
         # Unpack and assign the field values.
-        for i in range(0, numFields):
-            fieldName = fieldNames[i]
-            fieldValue = fieldValues[i]
+        for i in range(0, num_fields):
+            field_name = field_names[i]
+            field_value = field_values[i]
             
-            if not do.dclass.getFieldByName(fieldName):
-                # We can't set a field our dcclass doesn't have!
+            if not do.dclass.get_field_by_name(field_name):
+                # We can't set a field that doesn't exist!
                 continue
             
-            unpackedValue = do.unpackField(fieldName, fieldValue)
-            if unpackedValue:
-                do.fields[fieldName] = unpackedValue
+            unpacked_value = do.unpackField(field_name, field_value)
+            if unpacked_value:
+                do.fields[field_name] = unpacked_value
         
         # Save the database object to make sure we don't lose our changes.
-        self.manager.saveDatabaseObject(do)
+        await self.manager.save_dc_object(do)
         
-    def createStoredObject(self, sender, datagram):
+    async def handle_create_stored_object(self, sender, di):
         """
         Create a Database Object from the database object index.
         """
-        di = DatagramIterator(datagram)
         
-        fieldNames = []
-        fieldValues = []
+        if di.get_remaining_size() < 10:
+            return
         
         # Get the context.
-        context = di.getUint32()
+        context = di.get_uint32()
         
-        # This is the database object class, It's used if we don't have a ID.
-        dbObjectTypeStr = di.getString()
+        # Name of the dclass; This is used if we don't have a valid database object ID provided.
+        dclass_name = di.get_string()
         
         # This is our database object ID.
-        dbObjectType = di.getUint16()
+        db_object_type = di.get_uint16()
         
         # The amount of fields we have.
-        numFields = di.getUint16()
+        num_fields = di.get_uint16()
+        
+        field_names = []
+        field_values = []
         
         # Get all of our field names
-        for i in range(0, numFields):
-            fieldNames.append(di.getString())
+        for i in range(0, num_fields):
+            field_names.append(di.getString())
         
         # Get all of our field values.
-        for i in range(0, numFields):
-            fieldValues.append(di.getString().encode('ISO-8859-1'))
+        for i in range(0, num_fields):
+            field_values.append(di.getString().encode('ISO-8859-1'))
         
-        if not dbObjectType in self.dcObjectTypes:
-            print("ERROR: Failed to create stored object with invalid db object type %d!" % (dbObjectType))
+        if not db_object_type in self.dc_object_types and not self.dc.get_class_by_name(dclass_name):
+            print(f"[{self.name}]: Failed to create stored object with invalid paramters for the dclass: {dclass_name}, {db_object_type}")
                         
             dg = Datagram()
             # Add our context.
-            dg.addUint32(context)
+            dg.add_uint32(context)
             # We failed, So add a response code of 1.
-            dg.addUint8(1)
+            dg.add_uint8(1)
             
             # Send out our response.
-            self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_CREATE_STORED_OBJECT_RESP, dg)
+            await self.send_message([sender], self.channel, DBSERVER_CREATE_STORED_OBJECT_RESP, dg)
             return
-        
-        # Create a database object from our dc object type.
-        dbObject = self.manager.createDatabaseObject(dbObjectType)
-        
+            
+        dclass = self.dc_object_types.get(db_object_type, None)
+        if not dclass:
+            dclass = self.dc.get_class_by_name(dclass_name)
+            
         # Unpack and assign the field values.
-        for i in range(0, numFields):
-            fieldName = fieldNames[i]
-            fieldValue = fieldValues[i]
-
-            if not dbObject.dclass.getFieldByName(fieldName):
+        fields = {}
+        for i in range(0, num_fields):
+            field_name = field_names[i]
+            field_value = field_values[i]
+            
+            field = dclass.get_field_by_name(field_name)
+            if not field:
                 # We can't set a field our dcclass doesn't have!
                 continue
 
-            unpackedValue = dbObject.unpackField(fieldName, fieldValue)
-            if unpackedValue:
-                dbObject.fields[fieldName] = unpackedValue
-                
-        # Save the database object to make sure we don't lose our changes.
-        self.manager.saveDatabaseObject(dbObject)
+            if not field_value:
+                continue
+            
+            # Try to attempt and unpack the value passed for creation.
+            # The data may be malformed for one reason or another so if it's no good;
+            # Just discard and move on.
+            try:
+                # Create our packer and set the raw data for the field as the data
+                # to unpack.
+                packer = DCPacker()
+                packer.set_unpack_data(field_value)
+                    
+                # Unpack the data in the field.
+                packer.begin_unpack(field)
+                unpacked_value = field.unpack_args(packer)
+                packer.end_unpack()
+            except:
+                continue
+            
+            # Store our now unpacked value.
+            if unpacked_value:
+                fields[field_name] = unpacked_value
+        
+        # Create a database object from our dc object type with our specified fields.
+        object = await self.manager.create_dc_object(dclass, fields)
         
         dg = Datagram()
         
         # Add our context.
-        dg.addUint32(context)
+        dg.add_uint32(context)
         
         # We successfully created and set the fields of the database object.
-        dg.addUint8(0)
+        dg.add_uint8(0)
         
         # Add the resulting object doId.
-        dg.addUint32(dbObject.doId)
+        dg.add_uint32(object.doId)
         
         # Send out our response.
-        self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_CREATE_STORED_OBJECT_RESP, dg)
+        await self.send_message([sender], self.channel, DBSERVER_CREATE_STORED_OBJECT_RESP, dg)
 
-    def getEstate(self, sender, datagram):
+    async def handle_get_estate(self, sender, di):
         """
         Return the database values for the Estate and fields specified, 
         If some parts of the Estate aren't created. They are here.
         """
-        di = DatagramIterator(datagram)
+        
+        if di.get_remaining_size() < 8:
+            return
         
         # Get the context for sending back.
-        context = di.getUint32()
+        context = di.get_uint32()
         
         # The avatar which has the estate.
-        doId = di.getUint32()
+        doId = di.get_uint32()
         
         dg = Datagram()
         
         # Rain or shine. We want the context.
-        dg.addUint32(context)
+        dg.add_uint32(context)
         
-        if not self.manager.hasDatabaseObject(doId):
-            dg.addUint8(1) # Failed to get our avatar, So we can't get their houses either!
-            self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_GET_ESTATE_RESP, dg)
+        if not await self.manager.has_dc_object(doId):
+            dg.add_uint8(1) # Failed to get our avatar, So we can't get their houses either!
+            await self.send_message([sender], self.channel, DBSERVER_GET_ESTATE_RESP, dg)
             return
             
-        currentAvatar = self.manager.loadDatabaseObject(doId)
+        avatar = await self.manager.load_dc_object(doId)
         
         # Somehow we don't have an account!
-        if not 'setDISLid' in currentAvatar.fields:
-            dg.addUint8(1) # Avatar had invalid fields, So we can't get their houses.
-            self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_GET_ESTATE_RESP, dg)
+        if not 'setDISLid' in avatar.fields:
+            dg.add_uint8(1) # Avatar had invalid fields, So we can't get their houses.
+            await self.send_message([sender], self.channel, DBSERVER_GET_ESTATE_RESP, dg)
             return
             
-        accountId = currentAvatar.fields['setDISLid'][0]
+        account_id = avatar.fields['setDISLid'][0]
         
         # Our account doesn't exist!?
-        if not self.manager.hasDatabaseObject(accountId):
-            dg.addUint8(1) # Failed to get the account for our avatar, So we can't get their houses either!
-            self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_GET_ESTATE_RESP, dg)
+        if not await self.manager.has_dc_object(account_id):
+            dg.add_uint8(1) # Failed to get the account for our avatar, So we can't get their houses either!
+            await self.send_message([sender], self.channel, DBSERVER_GET_ESTATE_RESP, dg)
             return
             
-        account = self.manager.loadDatabaseObject(accountId)
+        account = await self.manager.load_dc_object(account_id)
         
         # Pre-define this here.
         estate = None
-        houseIds = [0, 0, 0, 0, 0, 0]
+        estate_id = account.fields.get('ESTATE_ID', 0)
+        house_ids = [0, 0, 0, 0, 0, 0]
         
         # We need to create an Estate!
-        if not 'ESTATE_ID' in account.fields or account.fields['ESTATE_ID'] == 0:
-            estate = self.manager.createDatabaseObjectFromName("DistributedEstate")
+        if not 'ESTATE_ID' in account.fields or estate_id == 0:
+            dclass = self.dc.get_class_by_name("DistributedEstate")
+            estate = await self.manager.create_dc_object(dclass)
             account.update("ESTATE_ID", estate.doId)
-            account.update("HOUSE_ID_SET", houseIds)
-            if not estate.doId in self.stateServer.dbObjects:
-                self.stateServer.dbObjects[estate.doId] = DistributedObject(estate.doId, estate.dclass, 0, 0)
+            account.update("HOUSE_ID_SET", house_ids)
         else:
-            estate = self.manager.loadDatabaseObject(account.fields['ESTATE_ID'])
-            houseIds = account.fields["HOUSE_ID_SET"]
-            if not estate.doId in self.stateServer.dbObjects:
-                self.stateServer.dbObjects[estate.doId] = DistributedObject(estate.doId, estate.dclass, 0, 0)
+            estate = await self.manager.load_dc_object(estate_id)
+            house_ids = account.fields["HOUSE_ID_SET"]
 
         avatars = account.fields["ACCOUNT_AV_SET"]
         
         houses = []
         
         # First create all our blank houses.
-        for i in range(0, len(houseIds)):
-            if houseIds[i] == 0:
-                house = self.manager.createDatabaseObjectFromName("DistributedHouse")
+        for i in range(0, len(house_ids)):
+            house_id = house_ids[i]
+            if house_id == 0:
+                dclass = self.dc.get_class_by_name("DistributedHouse")
+                house = await self.manager.create_dc_object(dclass)
                 house.update("setName", "")
                 house.update("setAvatarId", 0)
                 house.update("setColor", i)
-                houseIds[i] = house.doId
-                if not house.doId in self.stateServer.dbObjects:
-                    self.stateServer.dbObjects[house.doId] = DistributedObject(house.doId, house.dclass, 0, 0)
+                house_ids[i] = house.doId
                 houses.append(house)
             else: # If the house already exists... Just generate and store it.
-                house = self.manager.loadDatabaseObject(houseIds[i])
+                house = await self.manager.load_dc_object(house_id)
                 house.update("setColor", i)
-                if not house.doId in self.stateServer.dbObjects:
-                    self.stateServer.dbObjects[house.doId] = DistributedObject(house.doId, house.dclass, 0, 0)
                 houses.append(house)
                 
         pets = []
                 
         # Time to update our existing houses and pets!
         for i in range(0, len(avatars)):
-            avDoId = avatars[i]
+            av_doId = avatars[i]
             
             # If we're missing the avatar for some reason... Skip!
-            if not self.manager.hasDatabaseObject(avDoId):
+            if not await self.manager.has_dc_object(av_doId):
                 continue
                 
             # Load in our avatar.
-            avatar = self.manager.loadDatabaseObject(avDoId)
+            avatar = await self.manager.load_dc_object(av_doId)
             
             # Load our pet for this avatar in question in.
             if "setPetId" in avatar.fields and avatar.fields["setPetId"][0] != 0:
-                pet = self.manager.loadDatabaseObject(avatar.fields["setPetId"][0])
-                if not pet.doId in self.stateServer.dbObjects:
-                    self.stateServer.dbObjects[pet.doId] = DistributedObject(pet.doId, pet.dclass, 0, 0)
+                pet = await self.manager.load_dc_object(avatar.fields["setPetId"][0])
                 pets.append(pet)
                 
-            avPositionIndex = avatar.fields["setPosIndex"][0]
+            av_position_index = avatar.fields["setPosIndex"][0]
             # If for some reason theres no house here... Create one!
-            if houseIds[avPositionIndex] == 0:
-                house = self.manager.createDatabaseObjectFromName("DistributedHouse")
+            if houseIds[av_position_index] == 0:
+                dclass = self.dc.get_class_by_name("DistributedHouse")
+                house = await self.manager.create_dc_object(dclass)
                 house.update("setName", avatar.fields["setName"][0])
-                house.update("setAvatarId", avDoId)
-                house.update("setColor", avPositionIndex)
-                houseIds[avPositionIndex] = house.doId
-                if not house.doId in self.stateServer.dbObjects:
-                    self.stateServer.dbObjects[house.doId] = DistributedObject(house.doId, house.dclass, 0, 0)
+                house.update("setAvatarId", avatar.doId)
+                house.update("setColor", av_position_index)
+                houseIds[av_position_index] = house.doId
             else: # Update our houses info just in case ours changed!
-                house = self.manager.loadDatabaseObject(houseIds[avPositionIndex])
+                house = await self.manager.load_dc_object(houseIds[av_position_index])
                 house.update("setName", avatar.fields["setName"][0])
-                house.update("setAvatarId", avDoId)
-                house.update("setColor", avPositionIndex)
-                if not house.doId in self.stateServer.dbObjects:
-                    self.stateServer.dbObjects[house.doId] = DistributedObject(house.doId, house.dclass, 0, 0)
+                house.update("setAvatarId", avatar.doId)
+                house.update("setColor", av_position_index)
             
-        
         # Update our ids just in case a new house was made.
         account.update("HOUSE_ID_SET", houseIds)
         
         # Make sure our account saved it's changes.
-        self.manager.saveDatabaseObject(account)
+        await self.manager.save_dc_object(account)
         
         # We've succeeded in loading everything we need to, So we add this indicating success.
-        dg.addUint8(0)
+        dg.add_uint8(0)
         
         # Add our estate doId
-        dg.addUint32(estate.doId)
+        dg.add_uint32(estate.doId)
         
         # Add the amount of fields in our estate.
-        dg.addUint16(len(estate.fields))
+        dg.add_uint16(len(estate.fields))
         
         # Add our field values. This in theory isn't needed at all.
         for name, value in estate.fields.items():
             try:
-                dg.addString(name)
-                dg.addString(estate.packField(name, value).decode('ISO-8859-1'))
-                dg.addUint8(True)
+                dg.add_string(name)
+                dg.add_string(estate.packField(name, value).decode('ISO-8859-1'))
+                dg.add_uint8(True)
             except:
-                dg.addString("DEADBEEF")
-                dg.addString("DEADBEEF")
-                dg.addUint8(False)
+                dg.add_string("DEADBEEF")
+                dg.add_string("DEADBEEF")
+                dg.add_uint8(False)
                 
-        houseLen = len(houses)
         # Add the number of houses we have.
-        dg.addUint16(houseLen)
+        dg.add_uint16(len(houses))
         
         # Add all of our house doIds.
         for i in range(0, len(houses)):
-            house = houses[i]
-            dg.addUint32(house.doId)
+            dg.add_uint32(houses[i].doId)
         
-        houseData = {}
-        foundHouses = houseLen
+        house_data = {}
         
         for name in list(houses[0].fields.keys()):
-            houseData[name] = []
+            house_data[name] = []
         
         # Make a our lists of field names and values. 
         for i in range(0, len(houses)):
             house = houses[i]
             for name, value in house.fields.items():
-                houseData[name].append(house.packField(name, value))
+                house_data[name].append(house.packField(name, value))
 
         # Add the number of house keys we have.
-        dg.addUint16(len(houseData))
+        dg.add_uint16(len(house_data))
         
         # Add our house keys.
-        for name in list(houseData.keys()):
-            dg.addString(name)
+        for name in list(house_data.keys()):
+            dg.add_string(name)
             
         # Add the number of house values we have.
-        dg.addUint16(len(houseData))
+        dg.add_uint16(len(house_data))
         
         # Add our house values.
-        for name, data in houseData.items():
-            dg.addUint16(houseLen) # Why the fuck is this needed Disney.
+        for name, data in house_data.items():
+            dg.add_uint16(houseLen) # Why the fuck is this needed Disney.
             for i in range(0, len(data)):
                 value = data[i]
-                dg.addString(value.decode('ISO-8859-1'))
+                dg.add_string(value.decode('ISO-8859-1'))
 
         # The amount of houses we got successfully,
         # It's not checked anymore. So it's safe to say it was scrapped.
-        dg.addUint16(foundHouses)
+        dg.add_uint16(len(houses))
         
         # Add in if we found a house or not, We don't really check this as of rn.
         # We've either failed earlier or gotten to this point.
-        for i in range(0, len(houseData)):
-            dg.addUint16(0) #hvLen, This isn't used anymore either.
+        for i in range(0, len(house_data)):
+            dg.add_uint16(0) #hvLen, This isn't used anymore either.
             for j in range(0, houseLen):
-                dg.addUint8(1)
+                dg.add_uint8(1)
             
         # Add the number of pets we have.
-        dg.addUint16(len(pets))
+        dg.add_uint16(len(pets))
         
         # Add our pet doIds.
         for i in range(0, len(pets)):
-            pet = pets[i]
-            dg.addUint32(pet.doId)
+            dg.add_uint32(pets[i].doId)
         
         # We can FINALLY send our message.
-        self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_GET_ESTATE_RESP, dg)
+        await self.send_message([sender], self.channel, DBSERVER_GET_ESTATE_RESP, dg)
 
-    def makeFriends(self, sender, datagram):
-        di = DatagramIterator(datagram)
-        
+    async def handle_make_friends(self, sender, di):
+        if di.get_remaining_size() < 13:
+            return
+            
         # The first person who wants to make friends.
-        friendIdA = di.getUint32()
+        friend_idA = di.get_uint32()
         
         # The second person who wants to make to friends.
-        friendIdB = di.getUint32()
+        friend_idB = di.get_uint32()
         
         # The flags for this friendship.
-        flags = di.getUint8()
+        flags = di.get_uint8()
         
         # Get the context for sending back.
-        context = di.getUint32()
+        context = di.get_uint32()
         
         dg = Datagram()
         
         # If one or neither of the database objects exist. They can NOT become friends.
-        if not self.manager.hasDatabaseObject(friendIdA) or not self.manager.hasDatabaseObject(friendIdB):
-            dg.addUint8(False)
-            dg.addUint32(context)
+        if not await self.manager.has_dc_object(friend_idA) or not await self.manager.has_dc_object(friend_idB):
+            dg.add_uint8(False)
+            dg.add_uint32(context)
             # Send out our response.
-            self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_MAKE_FRIENDS_RESP, dg)
+            await self.send_message([sender], self.channel, DBSERVER_MAKE_FRIENDS_RESP, dg)
             return
             
         # Load the database objects for our friends.
-        friendA = self.manager.loadDatabaseObject(friendIdA)
-        friendB = self.manager.loadDatabaseObject(friendIdB)
+        friendA = await self.manager.load_dc_object(friend_idA)
+        friendB = await self.manager.load_dc_object(friend_idB)
         
         # If one or either can't possibly make friends, We will respond with a failure.
-        if not friendA.dclass.getFieldByName("setFriendsList") or not friendB.dclass.getFieldByName("setFriendsList"):
-            dg.addUint8(False)
-            dg.addUint32(context)
+        if not friendA.dclass.get_field_by_name("setFriendsList") or not friendB.dclass.get_field_by_name("setFriendsList"):
+            dg.add_uint8(False)
+            dg.add_uint32(context)
             # Send out our response.
-            self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_MAKE_FRIENDS_RESP, dg)
+            await self.send_message([sender], self.channel, DBSERVER_MAKE_FRIENDS_RESP, dg)
             return
             
         # Make sure we have the field already.
@@ -594,50 +647,49 @@ class DatabaseServer:
         if not "setFriendsList" in friendB.fields:
             friendB.fields["setFriendsList"] = ([],)
             
-        friendAlist = friendA.fields["setFriendsList"][0]
-        friendBlist = friendB.fields["setFriendsList"][0]
+        friends_listA = friendA.fields["setFriendsList"][0]
+        friends_listB = friendB.fields["setFriendsList"][0]
         
         # To know if we had the corresponding friends or not.
-        HasFriendA = False
-        HasFriendB = False
+        has_friendA = False
+        has_friendB = False
         
-        # Check if we already have friend B in friend As list.
-        # And update it if we do.
-        for i in range(0, len(friendAlist)):
-            friendPair = friendAlist[i]
-            if friendPair[0] == friendIdB:
+        # Check if we already have friend B in friend As list;
+        # And update it if we don't already.
+        for i in range(0, len(friends_listA)):
+            friend_pair = friends_listA[i]
+            if friend_pair[0] == friendB.doId:
                 # We did.  Update the code.
-                friendAlist[i] = (friendIdB, flags)
-                HasFriendA = True
+                friends_listA[i] = (friendB.doId, flags)
+                has_friendA = True
                 break
                 
-        if not HasFriendA:
-            # We didn't already have this friend; tack it on.
-            friendAlist.append((friendIdB, flags))
+        if not has_friendA:
+            # We didn't already have this friend so add them to our list.
+            friends_listA.append((friendB.doId, flags))
             
-        # Check if we already have friend A in friend Bs list.
-        # And update it if we do.
-        for i in range(0, len(friendBlist)):
-            friendPair = friendBlist[i]
-            if friendPair[0] == friendIdA:
+        # Check if we already have friend A in friend Bs list;
+        # And update it if we don't already.
+        for i in range(0, len(friends_listB)):
+            friend_pair = friends_listB[i]
+            if friend_pair[0] == friendA.doId:
                 # We did.  Update the code.
-                friendBlist[i] = (friendIdA, flags)
-                HasFriendB = True
+                friends_listB[i] = (friendA.doId, flags)
+                has_friendB = True
                 break
                 
-        if not HasFriendB:
-            # We didn't already have this friend; tack it on.
-            friendBlist.append((friendIdA, flags))
-        
-        # We succesfully added them as a friend!
-        dg.addUint8(True)
-        dg.addUint32(context)
-        
-        self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_MAKE_FRIENDS_RESP, dg)
+        if not has_friendB:
+            # We didn't already have this friend so add them to our list.
+            friends_listB.append((friendA.doId, flags))
         
         # Save the database objects to make sure we don't lose our changes.
-        self.manager.saveDatabaseObject(friendA)
-        self.manager.saveDatabaseObject(friendB)
+        await self.manager.save_dc_object(friendA)
+        await self.manager.save_dc_object(friendB)
+        
+        # We succesfully added them as a friend!
+        dg.add_uint8(True)
+        dg.add_uint32(context)
+        await self.send_message([sender], self.channel, DBSERVER_MAKE_FRIENDS_RESP, dg)
         
     def saveSecretCodes(self):
         with open(os.path.join(self.databaseDirectory, "friend_access.dat"), "w") as file:

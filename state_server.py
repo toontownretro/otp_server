@@ -37,6 +37,7 @@ class StateServer(ServerInterface):
         
         # Failed to connect to the Message Director!
         if not connected:
+            print(f"[{self.name}]: Failed to connect to the Message Director.")
             return False
             
         # Setup our information on the Message Director.

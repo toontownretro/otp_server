@@ -6,7 +6,6 @@ from pprint import pformat
 
 # Use MariaDB for our SQL connection.
 import mariadb
-from mariadb.constants.ERR import *
 from mariadb import (
     DataError,
     DatabaseError,
@@ -20,6 +19,7 @@ from mariadb import (
     ProgrammingError,
     Warning,
 )
+from mariadb_shared.constants.ERR import *
 
 from panda3d.core import ConfigVariableInt, ConfigVariableString, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
 from panda3d.direct import DCPacker
@@ -603,9 +603,9 @@ class DatabaseManager:
         self.vfs = VirtualFileSystem.getGlobalPtr()
         
         self.database_channel_from_dclass_name = {
-            "Account": ACCOUNT_DB_CHANNEL_ID,
-            "DistributedAvatar": AVATAR_DB_CHANNEL_ID,
-            "DistributedPlayer": AVATAR_DB_CHANNEL_ID,
+            #"Account": ACCOUNT_DB_CHANNEL_ID,
+            #"DistributedAvatar": AVATAR_DB_CHANNEL_ID,
+            #"DistributedPlayer": AVATAR_DB_CHANNEL_ID,
         }
         
         self.host = ConfigVariableString("mysql-host", "localhost").getValue()
@@ -615,10 +615,12 @@ class DatabaseManager:
         
         # Get the branch flavor for use with our databases.
         db_salt = ""
+        '''
         if __dev__:
             db_salt = ConfigVariableString("dev-branch-flavor", "").getValue()
             if db_salt:
                 db_salt = db_salt + '_'
+        '''
         
         # Get our language for any language specific database
         language = ConfigVariableString("language", "english").getValue()
@@ -640,16 +642,16 @@ class DatabaseManager:
         default_db_name = ConfigVariableString("sql-default-db", "toontownTopDb").getValue()
         
         self.databases = {}
-        self.databases[DEFAULT_DB_CHANNEL_ID] = DCDatabase(self, host, port, user, passwd, f"{db_salt}{db_lang}{default_db_name}")
-        self.databases[ACCOUNT_DB_CHANNEL_ID] = DCDatabase(self, host, port, user, passwd, f"{db_salt}{db_lang}accounts")
-        self.databases[AVATAR_DB_CHANNEL_ID] = DCDatabase(self, host, port, user, passwd, f"{db_salt}{db_lang}avatars")
-        #self.databases[AVATAR_FRIENDS_DB_CHANNEL_ID] = FriendDatabase(host, port, user, passwd, f"{db_salt}{db_lang}avatar_friends")
-        self.databases[AVATAR_ACCESSORIES_DB_CHANNEL_ID] = DCDatabase(self, host, port, user, passwd, f"{db_salt}{db_lang}avatar_accessories")
-        self.databases[AWARDS_DB_CHANNEL_ID] = DatabaseSQL(host, port, user, passwd, f"{db_salt}{db_lang}awards")
-        self.databases[CODE_REDEMPTION_DB_CHANNEL_ID] = DatabaseSQL(host, port, user, passwd, f"{db_salt}{db_lang}code_redemption")
-        self.databases[GUILDS_DB_CHANNEL_ID] = DatabaseSQL(host, port, user, passwd, f"{db_salt}{db_lang}guilds")
-        self.databases[HOLIDAY_SCHEDULES_DB_CHANNEL_ID] = DatabaseSQL(host, port, user, passwd, f"{db_salt}{db_lang}holidayschedules")
-        self.databases[STATUS_DB_CHANNEL_ID] = DatabaseSQL(host, port, user, passwd, f"{db_salt}{db_lang}status")
+        self.databases[DEFAULT_DB_CHANNEL_ID] = DCDatabase(self, self.host, self.port, self.user, self.passwd, f"{db_salt}{db_lang}{default_db_name}")
+        self.databases[ACCOUNT_DB_CHANNEL_ID] = DCDatabase(self, self.host, self.port, self.user, self.passwd, f"{db_salt}{db_lang}accounts")
+        self.databases[AVATAR_DB_CHANNEL_ID] = DCDatabase(self, self.host, self.port, self.user, self.passwd, f"{db_salt}{db_lang}avatars")
+        #self.databases[AVATAR_FRIENDS_DB_CHANNEL_ID] = FriendDatabase(self.host, self.port, user, self.passwd, f"{db_salt}{db_lang}avatar_friends")
+        self.databases[AVATAR_ACCESSORIES_DB_CHANNEL_ID] = DCDatabase(self, self.host, self.port, self.user, self.passwd, f"{db_salt}{db_lang}avatar_accessories")
+        self.databases[AWARDS_DB_CHANNEL_ID] = DatabaseSQL(self.host, self.port, self.user, self.passwd, f"{db_salt}{db_lang}awards")
+        self.databases[CODE_REDEMPTION_DB_CHANNEL_ID] = DatabaseSQL(self.host, self.port, self.user, self.passwd, f"{db_salt}{db_lang}code_redemption")
+        self.databases[GUILDS_DB_CHANNEL_ID] = DatabaseSQL(self.host, self.port, self.user, self.passwd, f"{db_salt}{db_lang}guilds")
+        self.databases[HOLIDAY_SCHEDULES_DB_CHANNEL_ID] = DatabaseSQL(self.host, self.port, self.user, self.passwd, f"{db_salt}{db_lang}holidayschedules")
+        self.databases[STATUS_DB_CHANNEL_ID] = DatabaseSQL(self.host, self.port, self.user, self.passwd, f"{db_salt}{db_lang}status")
         
     async def initialize(self):
         for channel, db in self.databases.items():
@@ -667,17 +669,15 @@ class DatabaseManager:
         
         time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
+        doId = await self.databases[DEFAULT_DB_CHANNEL_ID].get_next_doId()
+        
         # Generate a unique identifier for the database object.
         m = hashlib.md5()
         m.update(f"{dclass.get_name()}{doId}{time_str}".encode('utf-8'))
-        
-        doUuId = uuid.UUID(m.hexdigest(), version=4)
-        
-        # Get the next available doId.
-        doId = await self.get_next_doId()
+        uuId = uuid.UUID(m.hexdigest(), version=4)
         
         # Create the DatabaseObject.
-        do = DatabaseObject(self, doId, doUuId, dclass)
+        do = DatabaseObject(self, doId, uuId, dclass)
         
         # We set default values
         packer = DCPacker()

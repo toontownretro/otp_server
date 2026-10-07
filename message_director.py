@@ -116,8 +116,8 @@ class MDClient(Client):
                 self.timeout_task = None
             
             # Start our server ping routine by creating a ping task.
-            if not self.ping_task:
-                self.ping_task = asyncio.create_task(self.schedule_ping(delay=0))
+            #if not self.ping_task:
+            #    self.ping_task = asyncio.create_task(self.schedule_ping(delay=0))
             
         elif code == CONTROL_REMOVE_CHANNEL:
             channel = di.getUint64()
@@ -157,10 +157,6 @@ class MDClient(Client):
 
             for _ in range(count):
                 self.channels.add(di.getUint64())
-                
-            # Start our server ping routine by creating a ping task.
-            if not self.ping_task:
-                self.ping_task = asyncio.create_task(self.schedule_ping(delay=0))
                 
         # See CONTROL_ADD_RANGE.
         elif code == CONTROL_REMOVE_RANGE:

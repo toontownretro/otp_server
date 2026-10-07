@@ -137,6 +137,7 @@ class Client(connection.Client):
         self.__doId2ClsendOverrides = {}
         
     async def handle_lost_connection(self):
+        print(f"{self.get_name()}: Lost connection!")
         await self.close()
         
     async def receive_datagram(self, dg):
@@ -392,7 +393,7 @@ class Client(connection.Client):
         tokenType = di.getInt32()
         wantMagicWords = di.getString()
         
-        tokenInfo = self.parse_play_token(playToken.encode("utf-8"), tokenType)
+        tokenInfo = await self.parse_play_token(playToken.encode("utf-8"), tokenType)
         
         returnCode = tokenInfo["returnCode"]
         if returnCode != 0:
@@ -1658,7 +1659,7 @@ class Client(connection.Client):
         object = DistributedObject(-1, dclass, -1, -1)
             
         # Update our object with the newly packed fields.
-        for name, value in packed_fields:
+        for name, value in packed_fields.items():
             field = object.dclass.get_field_by_name(name)
             assert field != None
             
@@ -1677,10 +1678,10 @@ class Client(connection.Client):
         for field in list(packed_fields.keys()):
             dg.add_string(field)
         for value in list(packed_fields.values()):
-            dg.add_string(value.get_message())
+            dg.add_string(value.get_message().decode('ISO-8859-1'))
 
         # Send our message to Database Server
-        self.agent.send_message([DBSERVER_ID], self.agent.channel, DBSERVER_CREATE_STORED_OBJECT, dg)
+        await self.agent.send_message([DBSERVER_ID], self.agent.channel, DBSERVER_CREATE_STORED_OBJECT, dg)
     
     async def database_request_object(self, dclass_name, doId, context):
         dclass = self.agent.dc.get_class_by_name(dclass_name)
@@ -1710,7 +1711,7 @@ class Client(connection.Client):
             dg.add_string(name)
             
         # Send our message to Database Server
-        self.agent.send_message([DBSERVER_ID], self.agent.channel, DBSERVER_GET_STORED_VALUES, dg)
+        await self.agent.send_message([DBSERVER_ID], self.agent.channel, DBSERVER_GET_STORED_VALUES, dg)
         
     async def database_update_object(self, dclass_name, doId, fields):
         dclass = self.agent.dc.get_class_by_name(dclass_name)
@@ -1753,7 +1754,7 @@ class Client(connection.Client):
             dg.add_string(value.get_message())
 
         # Send our message to Database Server
-        self.agent.send_message([DBSERVER_ID], self.agent.channel, DBSERVER_SET_STORED_VALUES, dg)
+        await self.agent.send_message([DBSERVER_ID], self.agent.channel, DBSERVER_SET_STORED_VALUES, dg)
         
     async def database_update_from_object(self, object, fields=None):
         if not object or not object.dclass:
@@ -1793,7 +1794,362 @@ class Client(connection.Client):
             dg.add_string(value.get_message())
 
         # Send our message to Database Server
-        self.agent.send_message([DBSERVER_ID], self.agent.channel, DBSERVER_SET_STORED_VALUES, dg)
+        await self.agent.send_message([DBSERVER_ID], self.agent.channel, DBSERVER_SET_STORED_VALUES, dg)
+        
+    async def parse_play_token(self, play_token, token_type):
+        def get_response(return_code, resp_string):
+            response = {"returnCode": return_code,
+                        "respString": resp_string,
+                        "accountName": None,
+                        "accountNameApproved": 0,
+                        "accountNumber": None,
+                        "userName": None,
+                        "swid": None,
+                        "familyNumber": -1,
+                        "familyAdmin": 1,
+                        "openChatEnabled": 0,
+                        "createFriendsWithChat": 0,
+                        "chatCodeCreationRule": 0,
+                        "familyMembers": None,
+                        "deployment": "",
+                        "whitelistChat": 1,
+                        "paid": 0,
+                        "hasParentAccount": 0,
+                        "toontownGameKey": None,
+                        "toonAccountType": 0,
+                       }
+
+            return response
+        
+        if token_type == CLIENT_LOGIN_2_GREEN:
+            print(f"{self.get_name()}: CLIENT_LOGIN_2_GREEN is not yet a supported token type!")
+            await self.disconnect(123, "") # The client agent is in a mode that disallows this type of login.
+            return get_response(5, "Unsupported playtoken type.")
+        elif token_type == CLIENT_LOGIN_2_BLUE:
+            print(f"{self.get_name()}: CLIENT_LOGIN_2_BLUE is not yet a supported token type!")
+            await self.disconnect(123, "") # The client agent is in a mode that disallows this type of login.
+            return get_response(5, "Unsupported playtoken type.")
+        # SSL Encoded Token, The main token type used for deployment and devs.
+        elif token_type == CLIENT_LOGIN_3_DISL_TOKEN or token_type == CLIENT_LOGIN_2_PLAY_TOKEN:
+            # Check if the token is encrypted, If not we only accept plain tokens on a dev enviorment.
+            encrypted = False
+            try:
+                base64.b64decode(play_token, validate=True)
+                encrypted = True
+            except:
+                pass
+                
+            if not encrypted and not __debug__:
+                print(f"{self.get_name()}: Rejecting plaintext token on non-development OTP Server.")
+                await self.disconnect(123, "") # The client agent is in a mode that disallows this type of login.
+                return get_response(3, "Ill-formatted playtoken.")
+                
+            # Pre-decrypt our play token.
+            try:
+                play_token = des3_cbc_decrypt(play_token, b"kvm5SAE7sAq9csdPA8UPZRe7") if encrypted else play_token
+            except Exception as e:
+                traceback.print_exc()
+                await self.disconnect(122, "") # Error decrypting OpenSSl token in CLIENT_LOGIN_2.
+                return get_response(3, "Ill-formatted playtoken.")
+                
+            print(play_token)
+            
+            # If we don't find this parameter, It's a old style token. Which are deprecated. 
+            if play_token.find(b"TOONTOWN_GAME_KEY") >= 0:
+                return await self.parse_DISL_play_token(play_token)
+                
+            # The token is the old style token.
+            return await self.parse_DISL_play_token_old(play_token)
+
+        print(f"{self.get_name()}: Got unknown token type '{str(tokenType)}' for playtoken!")
+        await self.disconnect(106, "") # The field indicating what type of token we are processing is invalid.
+        return get_response(5, "Unsupported playtoken type.")
+        
+    async def parse_DISL_play_token(self, play_token):
+        response = {"returnCode": 0,
+                    "respString": "",
+                    "accountName": None,
+                    "accountNameApproved": 0,
+                    "accountNumber": None,
+                    "userName": None,
+                    "swid": None,
+                    "familyNumber": -1,
+                    "familyAdmin": 1,
+                    "openChatEnabled": 0,
+                    "createFriendsWithChat": 0,
+                    "chatCodeCreationRule": 0,
+                    "familyMembers": None,
+                    "deployment": "",
+                    "whitelistChat": 1,
+                    "paid": 0,
+                    "hasParentAccount": 0,
+                    "toontownGameKey": None,
+                    "toonAccountType": 0,
+                  }
+                   
+        # If we can't find this parameter, The token is invalid.
+        if play_token.find(b"TOONTOWN_GAME_KEY") < 0:
+            print(f"{self.get_name()}: Failed to parse play token, Format is invalid!")
+            response["returnCode"] = 3
+            response["respString"] = "Ill-formatted playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+            
+        try:
+            play_token = play_token.decode("utf-8")
+        except:
+            print(f"{self.get_name()}: Failed to parse play token, Format is invalid!")
+            response["returnCode"] = 3
+            response["respString"] = "Ill-formatted playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+        
+        # Parse the variables into a dict.
+        variables = {}
+        lines = play_token.split("&")
+        for line in lines:
+            try:
+                name, value = line.split('=', 1)
+            except ValueError as e:
+                continue
+
+            variables[name] = value
+        
+        # Get our account name from the play token.
+        account_name = variables.get("ACCOUNT_NAME", None)
+        # If we couldn't get our account name, The token is invalid.
+        if not account_name:
+            print(f"{self.get_name()}: Couldn't find required field 'ACCOUNT_NAME' for playToken!")
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["accountName"] = account_name
+        
+        # Get our account name approval from the play token.
+        account_number = variables.get("ACCOUNT_NUMBER", None)
+        # If we got our account number, Set it in our response.
+        if account_number:
+            # Set the required response info.
+            response["accountNumber"] = int(account_number)
+            
+        # Get our account name approval from the play token.
+        user_name = variables.get("GAME_USERNAME", None)
+        # If we got our username, Set it in our response.
+        if user_name:
+            # Set the required response info.
+            response["userName"] = user_name
+        else:
+            response["userName"] = account_name
+            
+        # Get our SWID from the play token.
+        swid = variables.get("SWID", None)
+        # If we got our SWID, Set it in our response.
+        if swid:
+            # Set the required response info.
+            response["swid"] = swid
+            
+        # Check if the token is valid! (I'm not sure why a valid field exists..? Is it dynamically changed originally?)
+        valid = variables.get("valid", None)
+        # If we couldn't get if our token is valid or not, The token is of course. Invalid.
+        if not valid:
+            print(f"{self.get_name()}: Couldn't find required field 'valid' in playToken for '{response["accountName"]}'!")
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+            
+        # Get our valid bool, If we fail to with an error. It's a automatic rejection.
+        try:
+            valid = bool(valid)
+        except:
+            print(f"{self.get_name()}: Couldn't parse required field 'valid' in playToken for '{response["accountName"]}'!")
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+            
+        # If the token isn't valid... Well reject login.
+        if not valid:
+            print(f"{self.get_name()}: PlayToken for '{response["accountName"]}' is invalid! Rejecting login.")
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+        
+        # Get our expirey date and check if the token is already expired.
+        expire_time = variables.get("expires", None)
+        # If we have an expirey time, Check for if our token is expired.
+        if not expire_time:
+            print(f"{self.get_name()}: Couldn't find required field 'expires' in playToken for '{response["accountName"]}'!")
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+        
+        # Calcuate our local time to check the token for when it expires.
+        # To do so, get our local time and convert it to UTC.
+        now = datetime.now()
+        now = now.astimezone(tz=pytz.UTC)
+        
+        # Sanity check our expire time.
+        try:
+            expire_time = int(expire_time)
+        except:
+            print(f"{self.get_name()}: Token has invalid expire time '{expire_time}'! Rejecting the token for '{response["accountName"]}'!")
+            response["returnCode"] = 1
+            response["respString"] = "Invalid playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+        
+        # If our time is lower then 0. The time is invalid.
+        if expire_time < 0:
+            print(f"{self.get_name()}: Token has invalid expire time '{expire_time}'! Rejecting the token for '{response["accountName"]}'!")
+            response["returnCode"] = 1
+            response["respString"] = "Invalid playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+    
+        # Convert the expirey string to a datetime.
+        expire_now = datetime.fromtimestamp(expire_time)
+        expire_now = expire_now.replace(tzinfo=pytz.UTC)
+        # Make sure the token isn't expired. If it is, Reject the token.
+        if expire_now <= now:
+            print(f"{self.get_name()}: Token expired on '{expire_now.strftime("%a, %d %b %Y %H:%M:%S GMT")}'! Rejecting the token for '{response["accountName"]}'!")
+            response["returnCode"] = 1
+            response["respString"] = "Invalid playtoken."
+            await self.disconnect(105, "") # The expiration time on this play token has passed.
+            return response
+
+        # Get our account name approval from the play token.
+        account_name_approval = variables.get("ACCOUNT_NAME_APPROVAL", None)
+        # If we couldn't get our account name approval, The token is invalid.
+        if not account_name_approval:
+            print(f"{self.get_name()}: Couldn't find required field 'ACCOUNT_NAME_APPROVAL' in playToken for '{response["accountName"]}'!")
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["accountNameApproved"] = account_name_approval == "YES"
+            
+        # Get our family number from the play token.
+        family_number = variables.get("FAMILY_NUMBER", None)
+        # If we couldn't get our family number, The token is invalid.
+        if not family_number:
+            print(f"{self.get_name()}: Couldn't find required field 'FAMILY_NUMBER' in playToken for '{response["accountName"]}'!")
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["familyNumber"] = int(family_number)
+        
+        # Get our family admin status from the play token.
+        family_admin = variables.get("familyAdmin", None)
+        # If we couldn't get our family admin status, The token is invalid.
+        if not family_admin:
+            print(f"{self.get_name()}: Couldn't find required field 'familyAdmin' in playToken for '{response["accountName"]}'!")
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["familyAdmin"] = int(family_admin)
+        
+        # Get if open chat is enabled from the play token.
+        open_chat_enabled = variables.get("OPEN_CHAT_ENABLED", None)
+        # If we couldn't if open chat is enabled, The token is invalid.
+        if not open_chat_enabled:
+            print(f"{self.get_name()}: Couldn't find required field 'OPEN_CHAT_ENABLED' in playToken for '{response["accountName"]}'!")
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["openChatEnabled"] = True if open_chat_enabled == "YES" else False
+        
+        # Get if we can use secret codes from the play token.
+        create_friends_with_chat_flags = {"NO": 0, "CODE": 1, "YES": 2} # Result to index.
+        create_friends_with_chat = variables.get("CREATE_FRIENDS_WITH_CHAT", None)
+        # If we couldn't find that we can use secret codes or not, The token is invalid.
+        if not create_friends_with_chat:
+            print(f"{self.get_name()}: Couldn't find required field 'CREATE_FRIENDS_WITH_CHAT' in playToken for '{response["accountName"]}'!")
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["createFriendsWithChat"] = create_friends_with_chat_flags.get(create_friends_with_chat, 0)
+        
+        # Get our creation rule for secret codes from the play token.
+        chat_code_creation_rule_flags = {"NO": 0, "PARENT": 1, "YES": 2} # Result to index.
+        chat_code_creation_rule = variables.get("CHAT_CODE_CREATION_RULE", None)
+        # If we couldn't get creation rule for secret codes, The token is invalid.
+        if not chat_code_creation_rule:
+            print(f"{self.get_name()}: Couldn't find required field 'CHAT_CODE_CREATION_RULE' in playToken for '{response["accountName"]}'!")
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["chatCodeCreationRule"] = chat_code_creation_rule_flags.get(chat_code_creation_rule, 0)
+        
+        # Get if whitelist chat is enabled from the play token.
+        whitelist_chat = variables.get("WL_CHAT_ENABLED", None)
+        # If we got our whitelist chat flag, Set it in our response.
+        if whitelist_chat:
+            # Set the required response info.
+            response["whitelistChat"] = whitelist_chat == "YES"
+        else:
+            response["whitelistChat"] = False
+        
+        # Toontown Specific Variables.
+        
+        # Get our paid content access level from the play token.
+        toontown_access = variables.get("TOONTOWN_ACCESS", None)
+        # If we got our paid access level, Set it in our play token.
+        if toontown_access:
+            # Set if our account is paid or not.
+            response["paid"] = toontown_access == "FULL"
+        else:
+            response["paid"] = False
+            
+        # Get our game key from the play token.
+        toontown_game_key = variables.get("TOONTOWN_GAME_KEY", None)
+        # If we couldn't get our game key, The token is invalid.
+        if not toontown_game_key:
+            print(f"{self.get_name()}: Couldn't find required field 'TOONTOWN_GAME_KEY' in playToken for '{response["accountName"]}'!")
+            response["returnCode"] = 2
+            response["respString"] = "Invalid playtoken."
+            await self.disconnect(103, "") # There was an error parsing the OpenSSl token for the required fields.
+            return response
+
+        # Set the required response info.
+        response["toontownGameKey"] = toontown_game_key
+        
+        # Get our toontown account type from the play token.
+        toon_account_type_flags = {"NO_PARENT_ACCOUNT": 0, "WITH_PARENT_ACCOUNT": 1} # Result to index.
+        toon_account_type = variables.get("TOON_ACCOUNT_TYPE", None)
+        # If we got a toon account type, Add it to our response.
+        if toon_account_type:
+            # Set the required response info.
+            response["toonAccountType"] = toon_account_type_flags.get(toon_account_type, 0)
+        else:
+            response["toonAccountType"] = 0
+        
+        accepted_time = now.strftime("%a, %d %b %Y %H:%M:%S GMT")
+        expire_time = expire_now.strftime("%a, %d %b %Y %H:%M:%S GMT")
+        print(f"{self.get_name()}: Token for '{response["accountName"]}' accepted on {accepted_time}, Token expires on {expire_time}.")
+        return response
         
     async def register_for_channel(self, channel):
         self.__channels.add(channel)
@@ -1834,9 +2190,9 @@ class Client(connection.Client):
     def get_name(self):
         addr = self.get_address()
         if self.avatar != None: # Assume both self.account & addr exist.
-            return f"{self.name} - {addr[0]}:{addr[1]} ({self.account.doId}, {self.avatar.doId})"
+            return f"[{self.name} - {addr[0]}:{addr[1]} ({self.account.doId}, {self.avatar.doId})]"
         elif self.account != None: # Assume addr exists.
-            return f"{self.name} - {addr[0]}:{addr[1]} ({self.account.doId})"
+            return f"[{self.name} - {addr[0]}:{addr[1]} ({self.account.doId})]"
         elif addr != None:
-            return f"{self.name} - {addr[0]}:{addr[1]}"
-        return self.name
+            return f"[{self.name} - {addr[0]}:{addr[1]}]"
+        return f"[self.name]"

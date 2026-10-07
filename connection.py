@@ -130,7 +130,7 @@ class Client:
         except Exception as e:
             traceback.print_exception(e)
         
-    async def flush(self):
+    async def flush_interface(self):
         try:
             data = await self.read(2048)
         except Exception as e:
@@ -164,6 +164,8 @@ class Client:
             return None
 
         return self.writer.get_extra_info('peername')
+        
+    flush = flush_interface
         
 class Server:
     client_cls = Client
@@ -280,7 +282,7 @@ class Server:
         
         await client.receive_data(data)
         
-    async def flush(self):
+    async def flush_server(self):
         # Iterate all of our clients and receive data for them.
         await asyncio.gather(*map(self.flush_client, self.clients))
         
@@ -296,3 +298,5 @@ class Server:
         
     def get_name(self):
         return self.name
+        
+    flush = flush_server

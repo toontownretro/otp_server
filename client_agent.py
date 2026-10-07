@@ -1,4 +1,4 @@
-import asyncio, functools, os, socket, ssl, struct, time
+import asyncio, functools, os, socket, ssl, struct, time, traceback
 
 from panda3d.core import ConfigVariableInt, ConfigVariableBool, ConfigVariableString, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
 
@@ -79,6 +79,32 @@ class ClientAgent(ServerInterface, Server):
     async def handle_client(self, reader, writer):
         client = await self.client_cls.from_server(self, reader, writer)
         self.clients.append(client)
+        
+        addr = client.get_address()
+        print(f"[{self.name}]: Accepted client from address {addr[0]}:{addr[1]}.")
+        
+    async def flush_client(self, client):
+        try:
+            data = await client.read(2048)
+        except Exception as e:
+            data = None
+            
+        if not data or client.is_closed():
+            return
+            
+        addr = client.get_address()
+        try:
+            await client.receive_data(data)
+            #print(f"[{self.name}]: Recieved data from client at address {addr[0]}:{addr[1]}.")
+        except Exception as e:
+            traceback.print_exception(e)
+            print(f"[{self.name}]: Failed to recieve data from client at address {addr[0]}:{addr[1]}.")
+        
+    async def flush_interface(self):
+        await ServerInterface.flush_interface(self)
+        
+    async def flush_server(self):
+        await Server.flush_server(self)
 
     async def receive_datagram(self, dg):
         di = DatagramIterator(dg)
@@ -264,8 +290,9 @@ class ClientAgent(ServerInterface, Server):
         else:
             print(f"[{self.name}]: Unexpected message on internal channels (code {code})")
         
-    async def handle_datagram_for_client(self, client, channels, sender, code, datagram):
-        return await client.handle_agent_datagram(channels, sender, code, datagram)
+    async def handle_datagram_for_client(self, *args):
+        client, channels, sender, code, datagram = args
+        await client.handle_agent_datagram(channels, sender, code, datagram)
         
     def load_dna(self):
         # Get our Panda3D Virtual File System.
