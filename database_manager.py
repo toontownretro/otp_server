@@ -59,7 +59,7 @@ class DatabaseSQL:
     async def connect(self):
         # Try to connect to our SQL database at the host.
         try:
-            self.db = await mariadb.asyncConnect(host=self.host, port=self.port, user=self.user, passwd=self.passwd)
+            self.db = await mariadb.asyncConnect(host=self.host, port=self.port, user=self.user, passwd=self.passwd, autocommit=False)
         except OperationalError as e:
             raise Exception(f"Failed to connect to SQL db={self.db_name} at {self.host}:{self.port}.")
             return
@@ -81,11 +81,11 @@ class DatabaseSQL:
             await cursor.execute(f"USE `{self.db_name}`")
             if __debug__:
                 print(f"Using database '{self.db_name}'")
+        except Exception as e:
+            raise Exception(f"Failed to use SQL db={self.db_name} at {self.host}:{self.port}.")
+            return
         finally:
             await cursor.close()
-            
-        # We don't want our data to auto-commit, We want to rollback any errors.
-        self.db.autocommit(False)
         
     async def reconnect(self):
         if not self.db: return False
@@ -112,6 +112,9 @@ class DatabaseSQL:
             
             try:
                 await cursor.execute(f"USE `{self.db_name}`")
+            except Exception as e:
+                raise Exception(f"Failed to use SQL db={self.db_name} at {self.host}:{self.port}.")
+                return
             finally:
                 await cursor.close()
                 
@@ -156,11 +159,39 @@ class DatabaseSQL:
         return self.db.cursor()
         
     def get_binary_cursor(self):
+        '''
+        Returns a cursor that uses the binary protocol (prepared statements). 
+        Overrides the connection-level binary setting. 
+        Uses COM_STMT_PREPARE + COM_STMT_EXECUTE for better performance with repeated queries. 
+        
+        Example:
+        
+        # Use prepared statements for this cursor
+        cursor = conn.cursor(binary=True)
+        # First execution prepares the statement
+        cursor.execute("SELECT * FROM users WHERE id = ?", (1,))
+        # Subsequent executions reuse the prepared statement
+        cursor.execute("SELECT * FROM users WHERE id = ?", (2,))
+        cursor.close()
+        '''
         if not self.db:
             return None
         return self.db.cursor(binary=True)
 
     def get_dict_cursor(self):
+        '''
+        Returns a cursor that returns rows as dictionaries instead of tuples. 
+        Allows accessing columns by name.
+        
+        Example:
+        
+        # Access columns by name
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT id, name, email FROM users WHERE id = ?", (123,))
+        user = cursor.fetchone()
+        print(f"Name: {user['name']}, Email: {user['email']}")
+        cursor.close()
+        '''
         if not self.db:
             return None
         return self.db.cursor(dictionary=True)
@@ -228,13 +259,13 @@ class DCDatabase(DatabaseSQL):
                   FieldData     MEDIUMBLOB,
                   UNIQUE INDEX uidx_uuid(uuId)
                 )
-                ENGINE=Innodb
-                DEFAULT CHARSET=utf8;
+                DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                ENGINE=Innodb;
                 """)
                 
             await self.commit() # End transaction
         except OperationalError as e:
-            self.notify.warning("Unknown error when creating tables, retrying:\n%s" % str(e))
+            print("Unknown error when creating tables, retrying:\n%s" % str(e))
             await self.rollback() # Revert transaction
         except Exception as e:
             # Attempt to revert transaction.
@@ -386,16 +417,28 @@ class DCDatabase(DatabaseSQL):
             # Pack all of the database fields.
             dg.add_uint32(len(db_fields))
             for field, value in db_fields.items():
-                packer = DCPacker()
-                # Pack the fields name.
-                packer.raw_pack_string(field.get_name())
-                # Pack the args to the field.
-                packer.begin_pack(field)
-                if value != None:
-                    field.pack_args(packer, value)
-                else:
-                    packer.pack_default_value()
-                packer.end_pack()
+                try:
+                    packer = DCPacker()
+                    # Pack the fields name.
+                    packer.raw_pack_string(field.get_name())
+                    # Pack the args to the field.
+                    packer.begin_pack(field)
+                    if value != None:
+                        field.pack_args(packer, value)
+                    else:
+                        packer.pack_default_value()
+                    packer.end_pack()
+                except:
+                    packer = DCPacker()
+                    # Pack the fields name.
+                    packer.raw_pack_string(field.get_name())
+                    # Pack the args to the field.
+                    packer.begin_pack(field)
+                    if value != None:
+                        field.pack_args(packer, value[0])
+                    else:
+                        packer.pack_default_value()
+                    packer.end_pack()
                 
                 # Append the packed data to our Datagram.
                 dg.append_data(packer.get_bytes())
@@ -406,16 +449,19 @@ class DCDatabase(DatabaseSQL):
             # Save our DC Object.
             if not await self.exists(do.doId):
                 # Create a new DC Object entry in our database.
-                cmd = f"INSERT INTO DCObject (DoId, UUID, DCHash, FieldData) VALUES ({do.doId}, {str(do.uuId)}, {self.dc_hash}, %%s);"
-                await cursor.execute(cmd, (fieldData,))
+
+                # Create the entry first.
+                cmd = "INSERT INTO DCObject (DoId, UUID, DCHash, FieldData) VALUES (%s, %s, %s, %s)"
+                await cursor.execute(cmd, (do.doId, str(do.uuId), self.dc_hash, fieldData))
             else:
                 # Update the existing entry in our database.
-                cmd = f"UPDATE DCObject SET FieldData=%%s WHERE DoId={do.doId};"
-                await cursor.execute(cmd, (fieldData,))
-                cmd = f"UPDATE DCObject SET DCHash={self.dc_hash} WHERE DoId={do.doId};"
-                await cursor.execute(cmd, ())
+                cmd = "UPDATE DCObject SET DCHash = %s, FieldData = %s WHERE DoId = %s"
+                await cursor.execute(cmd, (self.dc_hash, fieldData, do.doId))
             
             await self.commit() # End transaction
+        except mariadb.ProgrammingError as e:
+            await self.rollback() # Revert transaction
+            print(f"SQL ERROR: {e}")
         except OperationalError as e:
             await self.rollback() # Revert transaction
         except Exception as e:
@@ -424,7 +470,7 @@ class DCDatabase(DatabaseSQL):
             # Output our error.
             traceback.print_exception(e)
         finally:
-            await cursor.close()
+            if cursor: await cursor.close()
         
     async def exists(self, doId):
         """
@@ -475,7 +521,7 @@ class DCDatabase(DatabaseSQL):
             # Output our error.
             traceback.print_exception(e)
         finally:
-            await cursor.close()
+            if cursor: await cursor.close()
             
         return doId
         

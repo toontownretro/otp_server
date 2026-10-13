@@ -26,6 +26,9 @@ class PyOTP:
         # Start the Client Agent.
         await self.client_agent.start()
         
+        # Make sure to initialize the databases for the Database Server.
+        await self.database_server.manager.initialize()
+        
     async def connect(self):
         # Connect the Database Server to the Message Director.
         await self.database_server.connect("127.0.0.1", ConfigVariableInt("msg-director-port", 6666).getValue())
@@ -38,72 +41,6 @@ class PyOTP:
         
     async def add_task(self, async_task):
         self.async_tasks.append(async_task)
-    
-    async def flush_md(self):
-        # Flush the Message Director.
-        while True:
-            try:
-                await self.message_director.flush()
-                await asyncio.sleep(0)
-            except asyncio.CancelledError as e:
-                break
-            except KeyboardInterrupt as e:
-                break
-            except Exception as e:
-                traceback.print_exception(e)
-        
-    async def flush_dbs(self):
-        # Flush the Database Server.
-        while True:
-            try:
-                await self.database_server.flush()
-                await asyncio.sleep(0)
-            except asyncio.CancelledError as e:
-                break
-            except KeyboardInterrupt as e:
-                break
-            except Exception as e:
-                traceback.print_exception(e)
-        
-    async def flush_ss(self):
-        # Flush the State Server.
-        while True:
-            try:
-                await self.state_server.flush()
-                await asyncio.sleep(0)
-                if self.state_server.is_closed(): break
-            except asyncio.CancelledError as e:
-                break
-            except KeyboardInterrupt as e:
-                break
-            except Exception as e:
-                traceback.print_exception(e)
-                
-    async def flush_ca_interface(self):
-        # Flush the Client Agent server interface (To our Message Director)
-        while True:
-            try:
-                await self.client_agent.flush_interface()
-                await asyncio.sleep(0)
-            except asyncio.CancelledError as e:
-                break
-            except KeyboardInterrupt as e:
-                break
-            except Exception as e:
-                traceback.print_exception(e)
-        
-    async def flush_ca_server(self):
-        # Flush the Client Agent server backend.
-        while True:
-            try:
-                await self.client_agent.flush_server()
-                await asyncio.sleep(0)
-            except asyncio.CancelledError as e:
-                break
-            except KeyboardInterrupt as e:
-                break
-            except Exception as e:
-                traceback.print_exception(e)
 
 if __name__ == "__main__":
     async def main():
@@ -122,32 +59,29 @@ if __name__ == "__main__":
         await otp.connect()
         
         try:
-            #await otp.add_task(loop.create_task(otp.flush_md(), name="flush-md"))
-            await otp.add_task(loop.create_task(otp.flush_dbs(), name="flush-dbs"))
-            await otp.add_task(loop.create_task(otp.flush_ss(), name="flush-ss"))
-            await otp.add_task(loop.create_task(otp.flush_ca_interface(), name="flush-ca-interface"))
-            await otp.add_task(loop.create_task(otp.flush_ca_server(), name="flush-ca-server"))
+            await otp.add_task(loop.create_task(otp.message_director.flush_routine(), name="flush-md"))
+            await otp.add_task(loop.create_task(otp.database_server.flush_routine(), name="flush-dbs"))
+            await otp.add_task(loop.create_task(otp.state_server.flush_routine(), name="flush-ss"))
+            await otp.add_task(loop.create_task(otp.client_agent.flush_interface_routine(), name="flush-ca-interface"))
+            await otp.add_task(loop.create_task(otp.client_agent.flush_server_routine(), name="flush-ca-server"))
+            await otp.add_task(loop.create_task(otp.message_director.drain_routine(), name="drain-md"))
+            await otp.add_task(loop.create_task(otp.database_server.drain_routine(), name="drain-dbs"))
+            await otp.add_task(loop.create_task(otp.state_server.drain_routine(), name="drain-ss"))
+            await otp.add_task(loop.create_task(otp.client_agent.drain_interface_routine(), name="drain-ca-interface"))
+            await otp.add_task(loop.create_task(otp.client_agent.drain_server_routine(), name="drain-ca-server"))
+            await otp.add_task(loop.create_task(otp.message_director.start_message_routing(), name="md-message-routing"))
         except Exception as e:
             traceback.print_exception(e)
             
-        '''
+        # Very slow loop. This is just here to keep the server open
         while True:
             try:
-                for task in otp.async_tasks:
-                    # create a string buffer
-                    buffer = io.StringIO("")
-                    # print the task stack
-                    task.print_stack(file=buffer)
-                    # log the trace
-                    print(buffer.getvalue())
-                    # close the string buffer
-                    buffer.close()
+                await asyncio.sleep(240)
+            except asyncio.CancelledError as e:
+                break
             except KeyboardInterrupt as e:
                 break
             except Exception as e:
                 traceback.print_exception(e)
-        '''
-        
-        await otp.flush_md()
             
     asyncio.run(main())

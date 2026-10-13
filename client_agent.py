@@ -1,4 +1,4 @@
-import asyncio, functools, os, socket, ssl, struct, time, traceback
+import asyncio, functools, io, os, socket, ssl, struct, time, traceback
 
 from panda3d.core import ConfigVariableInt, ConfigVariableBool, ConfigVariableString, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
 
@@ -20,6 +20,10 @@ class ClientAgent(ServerInterface, Server):
         Server.__init__(self, addr, port)
         
         self.channel = channel
+        
+        # A channel for our clients to communicate and get responses from the
+        # things registered in the Message Director.
+        self.client_channel = self.channel + 1
         
         # SSL Context
         #context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -58,6 +62,7 @@ class ClientAgent(ServerInterface, Server):
             
         # Setup our information on the Message Director.
         await self.register_for_channel(self.channel)
+        await self.register_for_channel(self.client_channel)
         await self.register_for_channel(CLIENTAGENT_ID)
         await self.set_connection_name(self.name)
         
@@ -73,8 +78,12 @@ class ClientAgent(ServerInterface, Server):
         await Server.close(self)
         
     async def close(self):
-        await self.close_interface()
         await self.close_server()
+
+        await self.unregister_for_channel(self.channel)
+        await self.unregister_for_channel(self.client_channel)
+        await self.unregister_for_channel(CLIENTAGENT_ID)
+        await self.close_interface()
         
     async def handle_client(self, reader, writer):
         client = await self.client_cls.from_server(self, reader, writer)
@@ -274,6 +283,10 @@ class ClientAgent(ServerInterface, Server):
             
             # We apply the update
             field = do.dclass.getFieldByIndex(fieldId)
+            if not field:
+                return
+            
+            #print(f"[{self.name}] [DEBUG]: Updating field {field.get_name()} in {do.dclass.get_name()} {do.doId}.")
             
             # Receieve the update onto the object.
             do.receiveField(field, di)
@@ -290,7 +303,7 @@ class ClientAgent(ServerInterface, Server):
         else:
             print(f"[{self.name}]: Unexpected message on internal channels (code {code})")
         
-    async def handle_datagram_for_client(self, *args):
+    async def handle_datagram_for_client(self, args):
         client, channels, sender, code, datagram = args
         await client.handle_agent_datagram(channels, sender, code, datagram)
         
@@ -402,28 +415,34 @@ class ClientAgent(ServerInterface, Server):
             self.__context = 0
         return self.__context
         
-'''
-if __name__ == "__main__":
-    async def main():
-        # Get the running loop inside an async function
+async def start_clientagent():
+    ca = await ClientAgent.initialize("0.0.0.0", 6667, ConfigVariableInt("client-agent-id", 20200000).getValue())
+    await ca.connect("127.0.0.1", ConfigVariableInt("msg-director-port", 6666).getValue())
+    await ca.start()
+    
+    async_tasks = []
+    try:
         loop = asyncio.get_running_loop()
-        
-        ca = await ClientAgent.initialize("0.0.0.0", ConfigVariableInt("msg-director-port", 6666).getValue(), ConfigVariableInt("client-agent-id", 20200000).getValue())
-        await ca.connect("127.0.0.1", ConfigVariableInt("msg-director-port", 6666).getValue())
-        
+        async_tasks.append(loop.create_task(ca.server.serve_forever(), name="serve"))
+        async_tasks.append(loop.create_task(ca.flush_interface_routine(), name="flush-interface"))
+        async_tasks.append(loop.create_task(ca.flush_server_routine(), name="flush-server"))
+        async_tasks.append(loop.create_task(ca.drain_interface_routine(), name="drain-interface"))
+        async_tasks.append(loop.create_task(ca.drain_server_routine(), name="drain-server"))
+    except asyncio.CancelledError:
+        pass
+    
+    # Very slow loop. This is just here to keep the server open
+    while True:
         try:
-            loop.create_task(ca.server.serve_forever())
-        except asyncio.CancelledError:
-            pass
-        
-        while True:
-            try:
-                await ca.flush()
-                await asyncio.sleep(0)
-            except KeyboardInterrupt as e:
-                break
-            except Exception as e:
-                traceback.print_exception(e)
+            await asyncio.sleep(240)
+        except asyncio.CancelledError as e:
+            break
+        except KeyboardInterrupt as e:
+            break
+        except Exception as e:
+            traceback.print_exception(e)
             
-    asyncio.run(main())
-'''
+    del async_tasks
+
+if __name__ == "__main__":
+    asyncio.run(start_clientagent())

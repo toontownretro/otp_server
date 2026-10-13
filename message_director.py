@@ -1,4 +1,4 @@
-import asyncio, functools, math, socket, struct, time, traceback
+import asyncio, functools, io, math, socket, struct, time, traceback
 
 from panda3d.core import ConfigVariableInt, Datagram, DatagramIterator
 
@@ -6,11 +6,14 @@ from connection import Client, Server
 from msgtypes import *
 
 class MDMessage:
+    TIMEOUT_PERIOD = 30
+    
     def __init__(self, channels, code, sender, data):
         self.channels = channels
         self.code = code
         self.sender = sender
         self.data = data
+        self.request_time = 0.0
 
 class MDClient(Client):
     def __init__(self):
@@ -116,15 +119,15 @@ class MDClient(Client):
                 self.timeout_task = None
             
             # Start our server ping routine by creating a ping task.
-            #if not self.ping_task:
-            #    self.ping_task = asyncio.create_task(self.schedule_ping(delay=0))
+            if not self.ping_task:
+                self.ping_task = asyncio.create_task(self.schedule_ping(delay=0))
             
         elif code == CONTROL_REMOVE_CHANNEL:
             channel = di.getUint64()
             
             if channel in self.channels:
                 self.channels.remove(channel)
-                print(f"[{self.get_name()}]: Unregistered channel {channel}")
+                #print(f"[{self.get_name()}]: Unregistered channel {channel}")
             
             if not self.get_primary_channel():
                 # A client without a primary channel can't be sent to or from.
@@ -143,7 +146,7 @@ class MDClient(Client):
                     self.timeout_task = None
                 
                 # Create our new timeout task.
-                self.timeout_task = asyncio.create_task(self.timeout())
+                #self.timeout_task = asyncio.create_task(self.timeout())
             
         # This is just a guess of what this control code actually did, We don't know in truth.
         # It could've also added all of the channels in-between a range of two channels. But I don't see any good reason
@@ -187,7 +190,7 @@ class MDClient(Client):
                     self.timeout_task = None
                 
                 # Create our new timeout task.
-                self.timeout_task = asyncio.create_task(self.timeout())
+                #self.timeout_task = asyncio.create_task(self.timeout())
             
         elif code == CONTROL_ADD_POST_REMOVE:
             message = di.getRemainingBytes()
@@ -220,6 +223,7 @@ class MDClient(Client):
         
         # Make the message to add to our list.
         message = MDMessage(channels, code, sender, data)
+        message.request_time = time.time()
         
         # Add it for later.
         self.route_messages.append(message)
@@ -326,7 +330,7 @@ class MDClient(Client):
             
         # Create a timeout task for the client to drop with.
         # This will trigger if we don't recieve a response ping in time.
-        self.timeout_task = asyncio.create_task(self.timeout())
+        #self.timeout_task = asyncio.create_task(self.timeout())
         
         # Send our ping to the server which is connected to us.
         await self.send_ping()
@@ -375,6 +379,9 @@ class MessageDirector(Server):
         
         self.set_name("MESSAGE DIRECTOR")
         
+        self.all_channels = set()
+        self.unrouted_messages = []
+
     @classmethod
     async def initialize(cls, addr="0.0.0.0", port=6666):
         self = cls(addr, port)
@@ -388,15 +395,27 @@ class MessageDirector(Server):
     async def handle_client(self, reader, writer):
         client = await self.client_cls.from_server(reader, writer)
         # Create a timeout task to boot the client if it doesn't do anything.
-        client.timeout_task = asyncio.create_task(client.timeout())
+        #client.timeout_task = asyncio.create_task(client.timeout())
         self.clients.append(client)
         
         addr = client.get_address()
         print(f"[{self.name}]: Accepted connection from {addr[0]}:{addr[1]}!")
         
+    async def remove_client(self, client):
+        # Only remove the client if it's been closed.
+        if not client.is_closed(): 
+            return
+            
+        # If there is any messages left to route, Add them to our unrouted messages.
+        if len(client.route_messages) > 0:
+            self.unrouted_messages.extend(client.route_messages)
+            
+        # Client is closed so we don't receive from or send to it.
+        self.clients.remove(client)
+        
     async def flush_client(self, client):
         try:
-            data = await client.read(2048)
+            data = await client.read(self.READ_IN)
         except Exception as e:
             data = None
         
@@ -406,27 +425,41 @@ class MessageDirector(Server):
         
         await client.receive_data(data)
         
-    async def flush(self):
-        # Before we take in the data from our clients,
-        # Flush out the pending messages that we last received.
-        # This is so clients that have disconencted can still pass along
-        # certain messages. Such as Post Removes.
-        
-        # Collect of the messages to route from all of our clients.
-        route_messages = []
-        for client in self.clients:
-            route_messages.extend(client.route_messages)
-            client.route_messages = [] # Make sure to clear the list, so no duplicates happen!
-        
-        # Bring in all of the new messages from our clients.
-        await super().flush()
-        
-        # Route all of the messages we've collected.
-        await asyncio.gather(*map(self.route_message, route_messages))
+    async def start_message_routing(self):
+        while (not self.server_closed):
+            try:
+                # Collect of the messages to route from all of our clients.
+                # We try and send any unrouted messages first.
+                route_messages = []
+                route_messages.extend(self.unrouted_messages)
+                # Make sure to clear this.
+                self.unrouted_messages = []
+                
+                # Collect all of the channels and route messages from our clients.
+                self.all_channels = set()
+                for client in list(self.clients):
+                    self.all_channels = self.all_channels | client.channels
+                    route_messages.extend(client.route_messages)
+                    client.route_messages = [] # Make sure to clear the list, so no duplicates happen!
+                
+                # Route all of the messages we've collected.
+                #await asyncio.gather(*map(self.route_message, route_messages))
+                
+                for message in route_messages:
+                    await self.route_message(message)
+                    
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError as e:
+                break
+            except KeyboardInterrupt as e:
+                break
+            except Exception as e:
+                traceback.print_exception(e)
         
     async def route_message(self, message):
         if not message: return
         
+        '''
         # Prepare a list of partial coroutines for the clients.
         routines = [
             functools.partial(client.send_message, message)
@@ -436,33 +469,54 @@ class MessageDirector(Server):
         
         # Send out the message to all the clients wanting to receive it.
         await asyncio.gather(*coroutines)
-        
         '''
+        
         for client in self.clients:
             await client.send_message(message)
-        '''
         
-'''
-if __name__ == "__main__":
-    async def main():
-        # Get the running loop inside an async function
+        # If a message has channels it has not managed to send to, Retain the message
+        # and try to send it when we can.
+        unsent_channels = message.channels.difference(self.all_channels)
+        # If no unsent channels remain. Then the message is all good.
+        if len(unsent_channels) <= 0:
+            #print(f"[{self.name}] [DEBUG]: Finished sending message {message.code} from {message.sender}. Attempted {message.route_attempts+1} times.")
+            return
+        # If we try and send a message too many times with no result. 
+        # We'll drop the message. We can assume the reciever isn't there and won't be.
+        delta = time.time() - message.request_time
+        if delta >= message.TIMEOUT_PERIOD:
+            print(f"[{self.name}] [DEBUG]: Dropping message {message.code} from {message.sender} being sent to recipients {message.channels}. Attempted for {round(delta, 4)} seconds.")
+            return
+        # Update the channels in the message.
+        message.channels = unsent_channels
+        # Add the message to the unrouted messages list.
+        self.unrouted_messages.append(message)
+        
+async def start_messagedirector():
+    md = await MessageDirector.initialize("0.0.0.0", ConfigVariableInt("msg-director-port", 6666).getValue())
+    
+    async_tasks = []
+    try:
         loop = asyncio.get_running_loop()
-        
-        md = await MessageDirector.initialize("0.0.0.0", ConfigVariableInt("msg-director-port", 6666).getValue())
-        
+        async_tasks.append(loop.create_task(md.server.serve_forever(), name="serve"))
+        async_tasks.append(loop.create_task(md.start_message_routing(), name="msg-route"))
+        async_tasks.append(loop.create_task(md.flush_routine(), name="flush"))
+        async_tasks.append(loop.create_task(md.drain_routine(), name="drain"))
+    except asyncio.CancelledError:
+        pass
+    
+    # Very slow loop. This is just here to keep the server open
+    while True:
         try:
-            loop.create_task(md.server.serve_forever())
-        except asyncio.CancelledError:
-            pass
-        
-        while True:
-            try:
-                await md.flush()
-                await asyncio.sleep(0)
-            except KeyboardInterrupt as e:
-                break
-            except Exception as e:
-                traceback.print_exception(e)
+            await asyncio.sleep(240)
+        except asyncio.CancelledError as e:
+            break
+        except KeyboardInterrupt as e:
+            break
+        except Exception as e:
+            traceback.print_exception(e)
             
-    asyncio.run(main())
-'''
+    del async_tasks
+        
+if __name__ == "__main__":
+    asyncio.run(start_messagedirector())

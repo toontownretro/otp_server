@@ -26,11 +26,17 @@ class DistributedObject:
             if (field.isRequired() or field.isRam()) and field.asAtomicField():
                 self.fields[field.getNumber()] = None
                 
-    def get(self, field, default=None):
+    def get(self, field, default=(None,)):
         field = self.dclass.getFieldByName(field)
         if not field:
             return default
         return self.fields.get(field.getNumber(), default)
+        
+    def has(self, field):
+        field = self.dclass.getFieldByName(field)
+        if not field:
+            return False
+        return field.getNumber() in self.fields
 
     def update(self, field, *values):
         self.fields[self.dclass.getFieldByName(field).getNumber()] = values
@@ -122,15 +128,17 @@ class DistributedObject:
             except Exception as e:
                 traceback.print_exception(e)
                 print(f"FATAL ERROR: Failed to unpack field '{field.getName()}'. See above for exception.")
+                value = None
                 break
             
-            if not atomic.getNumber() in self.fields:
+            # Value failed to unpack for one reason or another.
+            if not value: 
                 res.append(False)
                 continue
                 
             self.fields[atomic.getNumber()] = value
             res.append(True)
-            
+
         try:
             di.skipBytes(packer.getNumUnpackedBytes())
         except:
@@ -156,9 +164,6 @@ class DistributedObject:
         
         # Value failed to unpack for one reason or another.
         if not value:
-            return False
-        
-        if not field.getNumber() in self.fields:
             return False
             
         self.fields[field.getNumber()] = value

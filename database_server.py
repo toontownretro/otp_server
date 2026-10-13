@@ -1,4 +1,4 @@
-import hashlib, os, sys, uuid, string, random
+import asyncio, hashlib, io, os, sys, uuid, string, random, traceback
 
 from datetime import datetime, timedelta
 
@@ -8,7 +8,7 @@ try:
 except:
     import json
 
-from panda3d.core import ConfigVariableString, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
+from panda3d.core import ConfigVariableInt, ConfigVariableString, Datagram, DatagramIterator, DSearchPath, Filename, VirtualFileSystem
 from panda3d.direct import DCPacker
 
 from database_manager import DatabaseManager
@@ -40,6 +40,7 @@ class DatabaseServer(ServerInterface):
     async def initialize(cls, addr, port, channel):
         self = cls(channel)
         await self.connect(addr, port)
+        await self.manager.initialize()
         return self
         
     async def connect(self, addr, port):
@@ -125,22 +126,25 @@ class DatabaseServer(ServerInterface):
         if code == SERVER_PING:
             await self.handle_ping(sender, di)
         elif code == DBSERVER_GET_STORED_VALUES:
+            print(f"[{self.name}] [DEBUG]: Received DBSERVER_GET_STORED_VALUES.")
             await self.handle_get_stored_values(sender, di)
         elif code == DBSERVER_SET_STORED_VALUES:
+            print(f"[{self.name}] [DEBUG]: Received DBSERVER_SET_STORED_VALUES.")
             await self.handle_set_stored_values(sender, di)
         elif code == DBSERVER_CREATE_STORED_OBJECT:
+            print(f"[{self.name}] [DEBUG]: Received DBSERVER_CREATE_STORED_OBJECT.")
             await self.handle_create_stored_object(sender, di)
         elif code == DBSERVER_DELETE_STORED_OBJECT:
-            print("DBSERVER_DELETE_STORED_OBJECT")
+            print(f"[{self.name}] Received DBSERVER_DELETE_STORED_OBJECT which is not yet implemented.")
         elif code == DBSERVER_GET_ESTATE:
             await self.handle_get_estate(sender, di)
         elif code == DBSERVER_MAKE_FRIENDS:
             await self.handle_make_friends(sender, di)
         elif code == DBSERVER_REQUEST_SECRET:
-            print("DBSERVER_REQUEST_SECRET")
+            print(f"[{self.name}] [DEBUG]: Received DBSERVER_REQUEST_SECRET.")
             #self.requestSecret(sender, datagram)
         elif code == DBSERVER_SUBMIT_SECRET:
-            print("DBSERVER_SUBMIT_SECRET")
+            print(f"[{self.name}] [DEBUG]: Received DBSERVER_SUBMIT_SECRET.")
             #self.submitSecret(sender, datagram)
         else:
             print(f"[{self.name}]: Received unsupported message {code} on internal channel from {sender}, Ignoring.")
@@ -161,6 +165,9 @@ class DatabaseServer(ServerInterface):
             # We apply the update
             field = do.dclass.get_field_by_index(fieldId)
             do.receiveField(field, di)
+        else:
+            print(f"[{self.name}]: Ignoring unsupported message {code} on object channel from {sender}.")
+            return
             
     async def handle_ping(self, sender, di):
         """
@@ -258,6 +265,8 @@ class DatabaseServer(ServerInterface):
         # Add the list of our found field values.
         for i in range(0, num_fields):
             dg.add_uint8(found[i])
+            
+        print(f"[{self.name}] [DEBUG]: Sending DBSERVER_GET_STORED_VALUES_RESP to {sender}.")
 
         # Send out our response.
         await self.send_message([sender], self.channel, DBSERVER_GET_STORED_VALUES_RESP, dg)
@@ -406,6 +415,8 @@ class DatabaseServer(ServerInterface):
         
         # Add the resulting object doId.
         dg.add_uint32(object.doId)
+        
+        print(f"[{self.name}] [DEBUG]: Sending DBSERVER_CREATE_STORED_OBJECT_RESP to {sender}.")
         
         # Send out our response.
         await self.send_message([sender], self.channel, DBSERVER_CREATE_STORED_OBJECT_RESP, dg)
@@ -789,3 +800,30 @@ class DatabaseServer(ServerInterface):
         dg.addUint32(avId)
 
         self.messageDirector.sendMessage([sender], DBSERVER_ID, DBSERVER_SUBMIT_SECRET_RESP, dg)
+        
+async def start_databaseserver():
+    dbss = await DatabaseServer.initialize("127.0.0.1", ConfigVariableInt("msg-director-port", 6666).getValue(), ConfigVariableInt("database-server-id", DBSERVER_ID).getValue())
+    
+    async_tasks = []
+    try:
+        loop = asyncio.get_running_loop()
+        async_tasks.append(loop.create_task(dbss.flush_routine(), name="flush"))
+        async_tasks.append(loop.create_task(dbss.drain_routine(), name="drain"))
+    except asyncio.CancelledError:
+        pass
+    
+    # Very slow loop. This is just here to keep the server open
+    while True:
+        try:
+            await asyncio.sleep(240)
+        except asyncio.CancelledError as e:
+            break
+        except KeyboardInterrupt as e:
+            break
+        except Exception as e:
+            traceback.print_exception(e)
+            
+    del async_tasks
+
+if __name__ == "__main__":
+    asyncio.run(start_databaseserver())

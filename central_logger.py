@@ -6,7 +6,6 @@ class CentralLogger(DistributedObject):
     def __init__(self, doId, dclass, parentId, zoneId):
         super().__init__(doId, dclass, parentId, zoneId)
     
-    '''
     def receiveField(self, sender, field, di):
         # We don't want a molecular field update.
         molecular = field.asMolecularField()
@@ -23,5 +22,5 @@ class CentralLogger(DistributedObject):
             
         di.skipBytes(packer.getNumUnpackedBytes())
         
-        self.eventServer.writeToLog("%d|%s|%s|%d|%d\n" % (sender, category, eventString, targetDISLId, targetAvId))
-    '''
+        print("%d|%s|%s|%d|%d\n" % (sender, category, eventString, targetDISLId, targetAvId))
+        #self.eventServer.writeToLog("%d|%s|%s|%d|%d\n" % (sender, category, eventString, targetDISLId, targetAvId))

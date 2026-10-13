@@ -1,4 +1,4 @@
-import asyncio, functools, math, socket, struct, time, traceback
+import asyncio, functools, math, io, socket, struct, time, traceback
 
 from panda3d.core import ConfigVariableInt, ConfigVariableBool, Datagram, DatagramIterator
 
@@ -233,7 +233,8 @@ class StateServer(ServerInterface):
             dg.addUint32(doId)
             dg.addUint16(fieldId)
             dg.appendData(data)
-
+            
+            #print(f"[{self.name}] [DEBUG] [T1]: Updating field {field.get_name()} in {do.dclass.get_name()} {do.doId} and sending to {channels}.")
             await self.send_message(channels, sender, STATESERVER_OBJECT_UPDATE_FIELD, dg)
             
         elif code == STATESERVER_OBJECT_DELETE_RAM:
@@ -458,6 +459,7 @@ class StateServer(ServerInterface):
             dg.addUint16(fieldId)
             dg.appendData(data)
             
+            #print(f"[{self.name}] [DEBUG] [T2]: Updating field {field.get_name()} in {do.dclass.get_name()} {do.doId} and sending to {channels}.")
             await self.send_message(channels, sender, STATESERVER_OBJECT_UPDATE_FIELD, dg)
             
         elif code == STATESERVER_QUERY_OBJECT_ALL:
@@ -850,12 +852,16 @@ class StateServer(ServerInterface):
         await self.send_message(channels, sender, STATESERVER_OBJECT_DELETE_RAM, dg)
         
     async def announce_object_generate(self, do, sender):
-        if not do: return False
-        
-        #print(f"[{self.name}]: Announcing generate from {sender} for {do.dclass.getName()} {do.doId} under {do.parentId} at {do.zoneId}.")
+        if not do: 
+            return False
+            
+        await self.register_for_channel(do.doId)
 
         # We announce the object was created if it was not created by the owner.
         channels = self.get_interested(do, sender)
+        
+        #print(f"[{self.name}] [DEBUG]: Generating object {do.dclass.get_name()} {do.doId} from sender {sender} and sending to {channels}.")
+        
         if channels:
             dg = Datagram()
             dg.addUint32(do.parentId)
@@ -879,12 +885,18 @@ class StateServer(ServerInterface):
         return True
         
     async def announce_object_generate_with_other(self, do, sender):
-        if not do: return False
+        if not do: 
+            return False
         
         #print(f"[{self.name}]: Announcing generate (other) from {sender} for {do.dclass.getName()} {do.doId} under {do.parentId} at {do.zoneId}.")
+        
+        await self.register_for_channel(do.doId)
 
         # We announce the object was created if it was not created by the owner.
         channels = self.get_interested(do, sender)
+        
+        #print(f"[{self.name}] [DEBUG]: Generating object (other) {do.dclass.get_name()} {do.doId} from sender {sender} and sending to {channels}.")
+        
         if channels:
             dg = Datagram()
             dg.addUint32(do.parentId)
@@ -974,20 +986,30 @@ class StateServer(ServerInterface):
             channels.remove(sender)
             
         return list(channels)
-
-'''
-if __name__ == "__main__":
-    async def main():
-        ss = await StateServer.initialize("127.0.0.1", ConfigVariableInt("msg-director-port", 6666).getValue(), ConfigVariableInt("state-server-id", 20100000).getValue())
-        while True:
-            try:
-                await ss.flush()
-                await asyncio.sleep(0)
-                if ss.is_closed(): break
-            except KeyboardInterrupt as e:
-                break
-            except Exception as e:
-                traceback.print_exception(e)
+        
+async def start_stateserver():
+    ss = await StateServer.initialize("127.0.0.1", ConfigVariableInt("msg-director-port", 6666).getValue(), ConfigVariableInt("state-server-id", 20100000).getValue())
+    
+    async_tasks = []
+    try:
+        loop = asyncio.get_running_loop()
+        async_tasks.append(loop.create_task(ss.flush_routine(), name="flush"))
+        async_tasks.append(loop.create_task(ss.drain_routine(), name="drain"))
+    except asyncio.CancelledError:
+        pass
+        
+    # Very slow loop. This is just here to keep the server open
+    while True:
+        try:
+            await asyncio.sleep(240)
+        except asyncio.CancelledError as e:
+            break
+        except KeyboardInterrupt as e:
+            break
+        except Exception as e:
+            traceback.print_exception(e)
             
-    asyncio.run(main())
-'''
+    del async_tasks
+
+if __name__ == "__main__":
+    asyncio.run(start_stateserver())

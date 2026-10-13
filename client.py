@@ -86,11 +86,8 @@ class Client(connection.Client):
         # We are no longer authorized.
         self.__authorized = False
         
-        # Remove our avatar if it exists.
-        await self.remove_avatar()
-        
         # Unregister all of our channels.
-        for channel in self.__channels:
+        for channel in set(self.__channels):
             await self.unregister_for_channel(channel)
         
         # Save all of our changes to our avatars to the Database
@@ -103,6 +100,9 @@ class Client(connection.Client):
             
             # Remove it from the list.
             self.avatars[pos] = None
+            
+        # Remove our avatar if it exists.
+        await self.remove_avatar()
         
         # Save any changes to the Account
         if self.account:
@@ -172,8 +172,12 @@ class Client(connection.Client):
     async def handle_agent_datagram(self, channels, sender, code, dg):
         di = DatagramIterator(dg)
         
+        #print(f"[{self.name}] [DEBUG]: Handling routed datagram ({code}) from {sender}.")
+        
         if sender == DBSERVER_ID:
             if code == DBSERVER_GET_STORED_VALUES_RESP:
+                print(f"[{self.name}] [DEBUG]: Handling DBSERVER_GET_STORED_VALUES_RESP from {sender}.")
+                
                 # Malformed response.
                 if di.getRemainingSize() <= 4:
                     return
@@ -186,6 +190,8 @@ class Client(connection.Client):
                 await self.receive_database_request_object_resp(context, di)
                 return
             elif code == DBSERVER_CREATE_STORED_OBJECT_RESP:
+                print(f"[{self.name}] [DEBUG]: Handling DBSERVER_CREATE_STORED_OBJECT_RESP from {sender}.")
+                
                 # Malformed response.
                 if di.getRemainingSize() <= 4:
                     return
@@ -273,6 +279,8 @@ class Client(connection.Client):
             await self.disconnect(220, "") # Internal error in the client state machine.  Contact the developers for correction.
             
     async def handle_heartbeat(self, di):
+        print(f"{self.get_name()}: Received heartbeat.")
+        
         # TODO: Keep track of heartbeats.
         data = di.getRemainingBytes()
         await self.send_message(CLIENT_HEARTBEAT, Datagram(bytes(data)))
@@ -322,7 +330,7 @@ class Client(connection.Client):
         self.db_callbacks[context] = (self.handle_login_2_db_resp, (tokenInfo, serverVersion, hashVal, validateDownload, wantMagicWords))
         await self.database_create_object("Account", fields, context)
             
-    async def handle_login_2_db_resp(self, object, *args):
+    async def handle_login_2_db_resp(self, object, args):
         if not object or not args:
             return
             
@@ -344,7 +352,7 @@ class Client(connection.Client):
         #now = now.astimezone(tz=pytz.UTC)
             
         # Check if the account has the creation date.
-        if not self.account.get("CREATED", None):
+        if not self.account.has("CREATED"):
             self.account.update("CREATED", now.strftime("%Y-%m-%d %H:%M:%S"))
             
         # Update our last login time.
@@ -427,7 +435,7 @@ class Client(connection.Client):
         self.db_callbacks[context] = (self.handle_login_toontown_db_resp, (tokenInfo, serverVersion, hashVal, wantMagicWords))
         await self.database_create_object("Account", fields, context)
         
-    async def handle_login_toontown_db_resp(self, object, *args):
+    async def handle_login_toontown_db_resp(self, object, args):
         if not object or not args:
             return
 
@@ -454,16 +462,21 @@ class Client(connection.Client):
         #now = now.astimezone(tz=pytz.UTC)
             
         # Check if the account has the creation date.
-        if not self.account.get("CREATED", None):
+        if not self.account.has("CREATED"):
             self.account.update("CREATED", now.strftime("%Y-%m-%d %H:%M:%S"))
             
         # Update our last login time.
         self.account.update("LAST_LOGIN", now.strftime("%Y-%m-%d %H:%M:%S"))
                 
         # Calculate the amount of days since our account was created.
+        
+        t = now.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"Current time: {t}")
+        print(f"Current time (strptime): {datetime.strptime(t, "%Y-%m-%d %H:%M:%S")}")
          
         # Get our creation time from the stored date string.
-        creation_time = datetime.strptime(self.account.get("CREATED"), "%Y-%m-%d %H:%M:%S")
+        date_str = self.account.get("CREATED", "")
+        creation_time = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
          
         # Calculate the difference in dates.
         delta_time = now - creation_time
@@ -529,7 +542,7 @@ class Client(connection.Client):
         
         # We currently don't have a way to get a account name from a account,
         # So just leave it as a specialized internal dev one..
-        fields["setAccountName"] = "internal_%s" % str(hex(self.account.doId))
+        fields["setAccountName"] = "internal_%s" % str(self.account.doId)
         
         # DISL is an acronym for Disney Integrated Services Layer.
         # This server must of had it's own set of accounts which included names
@@ -551,13 +564,14 @@ class Client(connection.Client):
         self.db_callbacks[context] = (self.handle_create_avatar_db_resp, (contextId, avPosition))
         await self.database_create_object("DistributedToon", fields, context)
         
-    async def handle_create_avatar_db_resp(self, object, *args):
+    async def handle_create_avatar_db_resp(self, object, args):
         if not object or not args:
             return
             
         contextId, avPosition = args
 
         # We save the avatar in the account
+        accountAvSet = self.account.get("ACCOUNT_AV_SET", [])
         accountAvSet[avPosition] = object.doId
         self.account.update("ACCOUNT_AV_SET", accountAvSet)
         
@@ -591,7 +605,7 @@ class Client(connection.Client):
         #now = now.astimezone(tz=pytz.UTC)
         
         # Add the avatar to the list of pending avatars to delete in the Database.
-        accountAvDelList = self.account.get("ACCOUNT_AV_SET_DEL", [])
+        accountAvDelList = self.account.get("ACCOUNT_AV_SET_DEL", ([],))[0]
         accountAvDelList.append((avId, int(now.timestamp())))
         
         # Remove the avatar from our list.
@@ -786,6 +800,8 @@ class Client(connection.Client):
 
                 # We want to add the "main" zone, i.e 2200 for 2205, etc
                 zones.add(zoneId - zoneId % 100)
+                
+        print(f"{self.get_name()} [DEBUG]: Adding interest to {parentId}, {zones} using handle {handle} and context {contextId}.")
 
         # This is set to an empty tuple because it's only defined if
         # it's overwriting an interest, but needed anyway.
@@ -885,6 +901,8 @@ class Client(connection.Client):
         # Client wants to remove an interest
         handle = di.getUint16()
         contextId = di.getUint32() # Might be optional
+        
+        print(f"{self.get_name()} [DEBUG]: Removing interests using handle {handle} with context {contextId}.")
 
         # Did the interest exist?
         if not handle in self.interests:
@@ -955,7 +973,7 @@ class Client(connection.Client):
         dg = Datagram()
         dg.addUint32(parentId)
         dg.addUint32(zoneId)
-        await self.agent.send_message([object.doId], self.agent.channel, STATESERVER_OBJECT_SET_ZONE, dg)
+        await self.route_message([object.doId], self.agent.channel, STATESERVER_OBJECT_SET_ZONE, dg)
         
         # Toontown Game Specific Code
         
@@ -995,12 +1013,12 @@ class Client(connection.Client):
 
         fields["setLastHood"] = (canonHoodId,)
         
-        zonesVisited = self.avatar.get("setZonesVisited", [])
+        zonesVisited = self.avatar.get("setZonesVisited", ([],))[0]
         if not canonHoodId in zonesVisited:
             zonesVisited.append(canonHoodId)
             fields["setZonesVisited"] = (zonesVisited,)
 
-        hoodsVisited = self.avatar.get("setHoodsVisited", [])
+        hoodsVisited = self.avatar.get("setHoodsVisited", ([],))[0]
         if not canonHoodId in hoodsVisited:
             hoodsVisited.append(canonHoodId)
             fields["setHoodsVisited"] = (hoodsVisited,)
@@ -1043,15 +1061,18 @@ class Client(connection.Client):
         dg.addUint16(fieldId)
         dg.appendData(di.getRemainingBytes())
             
-        if doId == self.avatar.doId and fieldId == self.agent.setTalkFieldId:
+        if (self.avatar and doId == self.avatar.doId) and fieldId == self.agent.setTalkFieldId:
             # Weird case: it's broadcasting and the others can see the chat, but the client
             # does not receive back their own chat message.
 
             # We will change the sender to 4681 (Chat Manager) to bypass this problem
-            await self.agent.send_message([doId], 4681, STATESERVER_OBJECT_UPDATE_FIELD, dg)
+            await self.route_message([doId], 4681, STATESERVER_OBJECT_UPDATE_FIELD, dg)
+        elif self.avatar:
+            # We just send the update to the StateServer.
+            await self.route_message([doId], self.avatar.doId, STATESERVER_OBJECT_UPDATE_FIELD, dg)
         else:
             # We just send the update to the StateServer.
-            await self.agent.send_message([doId], self.avatar.doId, STATESERVER_OBJECT_UPDATE_FIELD, dg)
+            await self.route_message([doId], self.agent.channel, STATESERVER_OBJECT_UPDATE_FIELD, dg)
         
     async def get_unloaded_avatars(self):
         """
@@ -1103,7 +1124,7 @@ class Client(connection.Client):
             
         return True
             
-    async def load_avatar_list_db_resp(self, object, *args):
+    async def load_avatar_list_db_resp(self, object, args):
         context, pos, max_count = args
         
         # If we didn't get an object. The avatar doesn't exist.
@@ -1150,11 +1171,11 @@ class Client(connection.Client):
             
             # PotentialAvatar
             dg.add_uint32(avatar.doId) # DoId
-            dg.add_string(avatar.get("setName")) # Name
+            dg.add_string(avatar.get("setName")[0]) # Name
             dg.add_string("") # Wish Name
             dg.add_string("") # Approved Wish Name
             dg.add_string("") # Rejected Wish Name
-            dg.add_blob(avatar.get("setDNAString")) # DNA
+            dg.add_blob(avatar.get("setDNAString")[0]) # DNA
             dg.add_uint8(pos) # Position
             dg.add_uint8(0) # Naming Allowed - For if the avatar is available for naming.
 
@@ -1197,9 +1218,9 @@ class Client(connection.Client):
         dg.addUint32(avatar.doId)
         avatar.packRequired(dg)
         avatar.packOther(dg)
-        await self.agent.send_message([20100000], avatar.doId, STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER, dg)
+        await self.route_message([20100000], avatar.doId, STATESERVER_OBJECT_GENERATE_WITH_REQUIRED_OTHER, dg)
         
-    async def set_avatar_finish(self, object, *args):
+    async def set_avatar_finish(self, object, args):
         avPosition = args
         
         self.avatar = object
@@ -1216,7 +1237,7 @@ class Client(connection.Client):
         self.avatar.packRequired(dg)
         await self.send_message(CLIENT_GET_AVATAR_DETAILS_RESP, dg)
         
-        friendsList = self.avatar.get("setFriendsList", None)
+        friendsList = self.avatar.get("setFriendsList", (None,))[0]
         if not friendsList:
             return
             
@@ -1257,12 +1278,12 @@ class Client(connection.Client):
         if not self.avatar_deleted:
             dg = Datagram()
             dg.add_uint32(avatarDoId)
-            await self.agent.send_message([20100000], avatarDoId, STATESERVER_OBJECT_DELETE_RAM, dg)
+            await self.route_message([20100000], avatarDoId, STATESERVER_OBJECT_DELETE_RAM, dg)
             self.avatar_deleted = True # This a mark to prevent resending a delete to the StateServer.
         
         # If we have friends... We should probably let them know we're heading off.
         
-        friendsList = self.avatar.get("setFriendsList", [])
+        friendsList = self.avatar.get("setFriendsList", ([],))[0]
 
         # Get all of our friend ids.
         friendIds = []
@@ -1293,7 +1314,7 @@ class Client(connection.Client):
             await callback(do, args)
             
         # Don't echo the message.
-        if self.avatar.doId == sender:
+        if self.avatar and self.avatar.doId == sender:
             return
             
         # Pack the datagram for creating the object on the client.
@@ -1312,16 +1333,16 @@ class Client(connection.Client):
         await self.send_message(CLIENT_CREATE_OBJECT_REQUIRED, dg)
         
     async def receive_delete(self, do, sender):
-        # Not retransmitting.
-        if self.avatar.doId == sender:
-            return
-            
-        # An AI likely dropped dead and our avatar got deleted,
-        # Disconnect our client with a lost connection message.
-        if do.doId == self.avatar.doId:
-            self.avatar_deleted = True # This a mark to prevent resending a delete to the StateServer.
-            await self.disconnect(153, "Lost connection.")
-            return
+        if self.avatar:
+            # Not retransmitting.
+            if self.avatar.doId == sender:
+                return
+            # An AI likely dropped dead and our avatar got deleted,
+            # Disconnect our client with a lost connection message.
+            if do.doId == self.avatar.doId:
+                self.avatar_deleted = True # This a mark to prevent resending a delete to the StateServer.
+                await self.disconnect(153, "Lost connection.")
+                return
             
         # We tell the client that it's disabled only if they're interested or the owner.
         is_interested = await self.has_interest(do.parentId, do.zoneId)
@@ -1337,7 +1358,7 @@ class Client(connection.Client):
         
     async def receive_move(self, do, prevParentId, prevZoneId, sender):
         # Don't echo the message.
-        if self.avatar.doId == sender:
+        if self.avatar and self.avatar.doId == sender:
             return
             
         # If we're the owner, we must receive it in any case.
@@ -1590,7 +1611,7 @@ class Client(connection.Client):
         object.packField(dg, field)
         
         # Send our message to State Server
-        await self.agent.send_message([object.doId], self.agent.channel, STATESERVER_OBJECT_UPDATE_FIELD, dg)
+        await self.route_message([object.doId], self.agent.channel, STATESERVER_OBJECT_UPDATE_FIELD, dg)
         
     async def stateserver_update_object_fields(self, object, fields):
         # Validate that the object is a valid one.
@@ -1619,14 +1640,13 @@ class Client(connection.Client):
             object.packField(dg, field)
             
             # Send our message to State Server
-            await self.agent.send_message([object.doId], self.agent.channel, STATESERVER_OBJECT_UPDATE_FIELD, dg)
+            await self.route_message([object.doId], self.agent.channel, STATESERVER_OBJECT_UPDATE_FIELD, dg)
         
     async def database_create_object(self, dclass_name, fields, context):
         dclass = self.agent.dc.get_class_by_name(dclass_name)
         if not dclass:
             return
             
-        packer = DCPacker()
         packed_fields = {}
         for index in range(dclass.get_num_inherited_fields()):
             field = dclass.get_inherited_field(index)
@@ -1643,14 +1663,26 @@ class Client(connection.Client):
                 continue
             
             # Begin packing.
-            packer.beginPack(field)
-            # Pack the field.
-            if field_name in fields:
-                field.packArgs(packer, fields[field_name])
-            else:
-                packer.packDefaultValue()
-            # Packing over.
-            packer.endPack()
+            try:
+                packer = DCPacker()
+                packer.beginPack(field)
+                # Pack the field.
+                if field_name in fields:
+                    field.packArgs(packer, fields[field_name])
+                else:
+                    packer.packDefaultValue()
+                # Packing over.
+                packer.endPack()
+            except:
+                packer = DCPacker()
+                packer.beginPack(field)
+                # Pack the field.
+                if field_name in fields:
+                    field.packArgs(packer, (fields[field_name],))
+                else:
+                    packer.packDefaultValue()
+                # Packing over.
+                packer.endPack()
                 
             # Add our field to the dict.
             packed_fields[field_name] = Datagram(packer.getBytes())
@@ -1681,7 +1713,7 @@ class Client(connection.Client):
             dg.add_string(value.get_message().decode('ISO-8859-1'))
 
         # Send our message to Database Server
-        await self.agent.send_message([DBSERVER_ID], self.agent.channel, DBSERVER_CREATE_STORED_OBJECT, dg)
+        await self.route_message([DBSERVER_ID], self.agent.client_channel, DBSERVER_CREATE_STORED_OBJECT, dg)
     
     async def database_request_object(self, dclass_name, doId, context):
         dclass = self.agent.dc.get_class_by_name(dclass_name)
@@ -1711,7 +1743,7 @@ class Client(connection.Client):
             dg.add_string(name)
             
         # Send our message to Database Server
-        await self.agent.send_message([DBSERVER_ID], self.agent.channel, DBSERVER_GET_STORED_VALUES, dg)
+        await self.route_message([DBSERVER_ID], self.agent.client_channel, DBSERVER_GET_STORED_VALUES, dg)
         
     async def database_update_object(self, dclass_name, doId, fields):
         dclass = self.agent.dc.get_class_by_name(dclass_name)
@@ -1733,7 +1765,7 @@ class Client(connection.Client):
             if not field_name in fields:
                 # Don't update a field we don't have a value for.
                 continue 
-
+            
             # Begin packing.
             packer.beginPack(field)
             # Pack the field.
@@ -1751,18 +1783,17 @@ class Client(connection.Client):
         for field in list(packed_fields.keys()):
             dg.add_string(field)
         for value in list(packed_fields.values()):
-            dg.add_string(value.get_message())
+            dg.add_string(value.get_message().decode('ISO-8859-1'))
 
         # Send our message to Database Server
-        await self.agent.send_message([DBSERVER_ID], self.agent.channel, DBSERVER_SET_STORED_VALUES, dg)
+        await self.route_message([DBSERVER_ID], self.agent.client_channel, DBSERVER_SET_STORED_VALUES, dg)
         
     async def database_update_from_object(self, object, fields=None):
         if not object or not object.dclass:
             return
             
-        packer = DCPacker()
         packed_fields = {}
-        for index, value in object.fields:
+        for index, value in object.fields.items():
             field = object.dclass.get_field_by_index(index)
             # We only want DB fields and we want them to have a value.
             if value == None or not field or not field.is_db() or field.as_molecular_field():
@@ -1774,12 +1805,22 @@ class Client(connection.Client):
             if fields and not field_name in fields:
                 continue
                 
-            # Begin packing.
-            packer.beginPack(field)
-            # Pack the field.
-            field.packArgs(packer, value)
-            # Packing over.
-            packer.endPack()
+            try:
+                packer = DCPacker()
+                # Begin packing.
+                packer.beginPack(field)
+                # Pack the field.
+                field.packArgs(packer, value)
+                # Packing over.
+                packer.endPack()
+            except:
+                packer = DCPacker()
+                # Begin packing.
+                packer.beginPack(field)
+                # Pack the field.
+                field.packArgs(packer, value[0])
+                # Packing over.
+                packer.endPack()
                 
             # Add our field to the dict.
             packed_fields[field_name] = Datagram(packer.getBytes())
@@ -1791,10 +1832,10 @@ class Client(connection.Client):
         for field in list(packed_fields.keys()):
             dg.add_string(field)
         for value in list(packed_fields.values()):
-            dg.add_string(value.get_message())
+            dg.add_string(value.get_message().decode('ISO-8859-1'))
 
         # Send our message to Database Server
-        await self.agent.send_message([DBSERVER_ID], self.agent.channel, DBSERVER_SET_STORED_VALUES, dg)
+        await self.route_message([DBSERVER_ID], self.agent.client_channel, DBSERVER_SET_STORED_VALUES, dg)
         
     async def parse_play_token(self, play_token, token_type):
         def get_response(return_code, resp_string):
@@ -2150,6 +2191,9 @@ class Client(connection.Client):
         expire_time = expire_now.strftime("%a, %d %b %Y %H:%M:%S GMT")
         print(f"{self.get_name()}: Token for '{response["accountName"]}' accepted on {accepted_time}, Token expires on {expire_time}.")
         return response
+        
+    async def route_message(self, channels, sender, code, datagram):
+        await self.agent.send_message(channels, sender, code, datagram)
         
     async def register_for_channel(self, channel):
         self.__channels.add(channel)
