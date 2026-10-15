@@ -26,11 +26,16 @@ class MDClient(Client):
         self.route_messages = []
         
         self.timeout_period = 30
+        self.timeout_task = None
         
         self.ping_task = None
         self.ping_delta = 0.0
         self.ping_time = 0.0
         self.name = None
+        
+        # For debugging.
+        self.recv_data_total = 0
+        self.recv_data_total_last = 0
         
     async def close(self):
         if self.closed:
@@ -251,6 +256,18 @@ class MDClient(Client):
         # Send our message.
         return await self.send_datagram(dg)
         
+    def read_datagram(self):
+        if not self.bufferconn:
+            return False
+            
+        dg = Datagram()
+        if not self.bufferconn.GetMessage(dg):
+            return False
+            
+        self.recv_data_total += dg.get_length()
+        self.datagrams.append(dg)
+        return True
+        
     async def receive_datagram(self, dg):
         di = DatagramIterator(dg)
         
@@ -374,8 +391,8 @@ class MDClient(Client):
 class MessageDirector(Server):
     client_cls = MDClient
     
-    def __init__(self, addr, port):
-        super().__init__(addr, port)
+    def __init__(self):
+        super().__init__()
         
         self.set_name("MESSAGE DIRECTOR")
         
@@ -383,17 +400,19 @@ class MessageDirector(Server):
         self.unrouted_messages = []
 
     @classmethod
-    async def initialize(cls, addr="0.0.0.0", port=6666):
-        self = cls(addr, port)
-        await self.start()
+    async def initialize(cls, port=6666):
+        self = cls()
+        await self.start(port)
         return self
         
-    async def start(self):
-        await super().start()
-        print(f"[{self.name}]: Now directing on {self.addr}:{self.port}.")
+    async def start(self, port=0):
+        await super().start(port)
         
-    async def handle_client(self, reader, writer):
-        client = await self.client_cls.from_server(reader, writer)
+        address = self.get_server_address()
+        print(f"[{self.name}]: Now directing on {address[0]}:{address[1]}.")
+        
+    async def handle_client(self, bufferconn, address):
+        client = await self.client_cls.from_server(bufferconn, address)
         # Create a timeout task to boot the client if it doesn't do anything.
         #client.timeout_task = asyncio.create_task(client.timeout())
         self.clients.append(client)
@@ -412,18 +431,6 @@ class MessageDirector(Server):
             
         # Client is closed so we don't receive from or send to it.
         self.clients.remove(client)
-        
-    async def flush_client(self, client):
-        try:
-            data = await client.read(self.READ_IN)
-        except Exception as e:
-            data = None
-        
-        # Just return, The Message Director manages ping messages for timeouts instead.
-        if not data:
-            return
-        
-        await client.receive_data(data)
         
     async def start_message_routing(self):
         while (not self.server_closed):
@@ -492,16 +499,33 @@ class MessageDirector(Server):
         # Add the message to the unrouted messages list.
         self.unrouted_messages.append(message)
         
+    async def start_debug_logging(self):
+        while (not self.server_closed):
+            try:
+                for client in list(self.clients):
+                    print(f"{client.get_name()}: Sent a total of {client.recv_data_total - client.recv_data_total_last} bytes since last log (10 seconds), {client.recv_data_total} since connecting.")
+                    client.recv_data_total_last =  client.recv_data_total
+                
+                # Every 10 seconds
+                await asyncio.sleep(10)
+            except asyncio.CancelledError as e:
+                break
+            except KeyboardInterrupt as e:
+                break
+            except Exception as e:
+                traceback.print_exception(e)
+        
 async def start_messagedirector():
-    md = await MessageDirector.initialize("0.0.0.0", ConfigVariableInt("msg-director-port", 6666).getValue())
+    md = await MessageDirector.initialize(ConfigVariableInt("msg-director-port", 6666).getValue())
     
     async_tasks = []
     try:
         loop = asyncio.get_running_loop()
-        async_tasks.append(loop.create_task(md.server.serve_forever(), name="serve"))
+        async_tasks.append(loop.create_task(md.listen_routine(), name="listen"))
         async_tasks.append(loop.create_task(md.start_message_routing(), name="msg-route"))
         async_tasks.append(loop.create_task(md.flush_routine(), name="flush"))
         async_tasks.append(loop.create_task(md.drain_routine(), name="drain"))
+        async_tasks.append(loop.create_task(md.start_debug_logging(), name="debug-log"))
     except asyncio.CancelledError:
         pass
     

@@ -12,19 +12,19 @@ from msgtypes import *
 class PyOTP:
     def __init__(self):
         #self.event_server = EventServer(self)
-        self.message_director = MessageDirector("0.0.0.0", ConfigVariableInt("msg-director-port", 6666).getValue())
+        self.message_director = MessageDirector()
         self.database_server = DatabaseServer(ConfigVariableInt("database-server-id", DBSERVER_ID).getValue())
         self.state_server = StateServer(ConfigVariableInt("state-server-id", 20100000).getValue())
-        self.client_agent = ClientAgent("0.0.0.0", 6667, ConfigVariableInt("client-agent-id", 20200000).getValue())
+        self.client_agent = ClientAgent(ConfigVariableInt("client-agent-id", 20200000).getValue())
         
         self.async_tasks = []
         
     async def initialize(self):
         # Start the Message Director.
-        await self.message_director.start()
+        await self.message_director.start(ConfigVariableInt("msg-director-port", 6666).getValue())
         
         # Start the Client Agent.
-        await self.client_agent.start()
+        await self.client_agent.start(6667)
         
         # Make sure to initialize the databases for the Database Server.
         await self.database_server.manager.initialize()
@@ -51,8 +51,8 @@ if __name__ == "__main__":
         await otp.initialize()
         
         try:
-            await otp.add_task(loop.create_task(otp.message_director.server.serve_forever(), name="md-serve_forever"))
-            await otp.add_task(loop.create_task(otp.client_agent.server.serve_forever(), name="ca-serve_forever"))
+            await otp.add_task(loop.create_task(otp.message_director.listen_routine(), name="md-listen"))
+            await otp.add_task(loop.create_task(otp.client_agent.listen_routine(), name="ca-listen"))
         except Exception as e:
             traceback.print_exception(e)
 
@@ -70,6 +70,7 @@ if __name__ == "__main__":
             await otp.add_task(loop.create_task(otp.client_agent.drain_interface_routine(), name="drain-ca-interface"))
             await otp.add_task(loop.create_task(otp.client_agent.drain_server_routine(), name="drain-ca-server"))
             await otp.add_task(loop.create_task(otp.message_director.start_message_routing(), name="md-message-routing"))
+            await otp.add_task(loop.create_task(otp.message_director.start_debug_logging(), name="md-debug-log"))
         except Exception as e:
             traceback.print_exception(e)
             

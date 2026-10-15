@@ -15,9 +15,9 @@ from msgtypes import *
 class ClientAgent(ServerInterface, Server):
     client_cls = Client
     
-    def __init__(self, addr="0.0.0.0", port=6667, channel=ConfigVariableInt("client-agent-id", 20200000).getValue()):
+    def __init__(self, channel):
         ServerInterface.__init__(self)
-        Server.__init__(self, addr, port)
+        Server.__init__(self)
         
         self.channel = channel
         
@@ -50,8 +50,9 @@ class ClientAgent(ServerInterface, Server):
         self.set_name("CLIENTAGENT")
         
     @classmethod
-    async def initialize(cls, addr, port, channel):
-        return cls(addr, port, channel)
+    async def initialize(cls, channel=ConfigVariableInt("client-agent-id", 20200000).getValue()):
+        self = cls(channel)
+        return self
         
     async def connect(self, addr, port):
         connected = await ServerInterface.connect(self, addr, port)
@@ -85,29 +86,18 @@ class ClientAgent(ServerInterface, Server):
         await self.unregister_for_channel(CLIENTAGENT_ID)
         await self.close_interface()
         
-    async def handle_client(self, reader, writer):
-        client = await self.client_cls.from_server(self, reader, writer)
+    async def handle_client(self, bufferconn, address):
+        client = await self.client_cls.from_server(self, bufferconn, address)
         self.clients.append(client)
         
         addr = client.get_address()
         print(f"[{self.name}]: Accepted client from address {addr[0]}:{addr[1]}.")
         
     async def flush_client(self, client):
-        try:
-            data = await client.read(2048)
-        except Exception as e:
-            data = None
-            
-        if not data or client.is_closed():
-            return
-            
-        addr = client.get_address()
-        try:
-            await client.receive_data(data)
-            #print(f"[{self.name}]: Recieved data from client at address {addr[0]}:{addr[1]}.")
-        except Exception as e:
-            traceback.print_exception(e)
-            print(f"[{self.name}]: Failed to recieve data from client at address {addr[0]}:{addr[1]}.")
+        if client.is_closed():
+            return 
+        
+        await client.read_datagrams()
         
     async def flush_interface(self):
         await ServerInterface.flush_interface(self)
@@ -416,14 +406,14 @@ class ClientAgent(ServerInterface, Server):
         return self.__context
         
 async def start_clientagent():
-    ca = await ClientAgent.initialize("0.0.0.0", 6667, ConfigVariableInt("client-agent-id", 20200000).getValue())
+    ca = await ClientAgent.initialize(ConfigVariableInt("client-agent-id", 20200000).getValue())
     await ca.connect("127.0.0.1", ConfigVariableInt("msg-director-port", 6666).getValue())
-    await ca.start()
+    await ca.start(6667)
     
     async_tasks = []
     try:
         loop = asyncio.get_running_loop()
-        async_tasks.append(loop.create_task(ca.server.serve_forever(), name="serve"))
+        async_tasks.append(loop.create_task(ca.listen_routine(), name="listen"))
         async_tasks.append(loop.create_task(ca.flush_interface_routine(), name="flush-interface"))
         async_tasks.append(loop.create_task(ca.flush_server_routine(), name="flush-server"))
         async_tasks.append(loop.create_task(ca.drain_interface_routine(), name="drain-interface"))

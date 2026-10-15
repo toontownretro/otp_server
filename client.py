@@ -58,13 +58,13 @@ class Client(connection.Client):
         await self.connect(addr, port)
         self.agent = agent
         return self
-    
+        
     @classmethod
-    async def from_server(cls, agent, reader, writer):
+    async def from_server(cls, agent, bufferconn, address):
         self = cls()
         self.agent = agent
-        self.reader = reader
-        self.writer = writer
+        self.bufferconn = bufferconn
+        self.address = address
         self.closed = False
         return self
         
@@ -229,6 +229,8 @@ class Client(connection.Client):
             print(f"{self.get_name()}: Unexpected message {code} from {sender} while handling a message from our Agent!")
         
     async def handle_authenticated_datagram(self, code, di):
+        print(f"{self.get_name()} [DEBUG]: Handling authenticated datagram with code {code}.")
+        
         if code == CLIENT_HEARTBEAT:
             await self.handle_heartbeat(di)
         elif code == CLIENT_DISCONNECT:
@@ -246,6 +248,12 @@ class Client(connection.Client):
             await self.handle_get_avatars(di)
         elif code == CLIENT_SET_AVATAR:
             await self.handle_set_avatar(di)
+        elif code == CLIENT_GET_AVATAR_DETAILS:
+            print(f"{self.get_name()} [WARN]: CLIENT_GET_AVATAR_DETAILS is not yet implemented!")
+        elif code == CLIENT_GET_FRIEND_LIST:
+            await self.handle_get_friend_list(di)
+        elif code == CLIENT_GET_FRIEND_LIST_EXTENDED:
+            print(f"{self.get_name()} [WARN]: CLIENT_GET_FRIEND_LIST_EXTENDED is not yet implemented!")
         elif code == CLIENT_ADD_INTEREST:
             await self.handle_add_interest(di)
         elif code == CLIENT_REMOVE_INTEREST:
@@ -270,8 +278,8 @@ class Client(connection.Client):
             await self.handle_login_toontown(di)
         # Authenticated message types that we don't yet have permission for.
         elif code in (CLIENT_CREATE_AVATAR, CLIENT_DELETE_AVATAR, CLIENT_SET_NAME_PATTERN, CLIENT_SET_WISHNAME,
-                      CLIENT_GET_AVATARS, CLIENT_SET_AVATAR, CLIENT_ADD_INTEREST, CLIENT_REMOVE_INTEREST, 
-                      CLIENT_OBJECT_LOCATION, CLIENT_OBJECT_UPDATE_FIELD):
+                      CLIENT_GET_AVATARS, CLIENT_SET_AVATAR, CLIENT_ADD_INTEREST, CLIENT_REMOVE_INTEREST, CLIENT_OBJECT_UPDATE_FIELD,
+                      CLIENT_GET_AVATAR_DETAILS, CLIENT_GET_FRIEND_LIST, CLIENT_OBJECT_LOCATION):
             print(f"{self.get_name()}: Received {code} that's only allowed for authenticated clients while unauthenticated!")
             await self.disconnect(220, "") # Internal error in the client state machine.  Contact the developers for correction.
         else:
@@ -314,16 +322,16 @@ class Client(connection.Client):
         now = datetime.now()
         #now = now.astimezone(tz=pytz.UTC)
 
-        # Fill out our account fields that have no default value.
-        fields = {"ACCOUNT_AV_SET": [0, 0, 0, 0, 0, 0,],
-                  "ACCOUNT_AV_SET_DEL": [],
-                  "pirateAvatars": [0, 0, 0, 0, 0, 0,],
-                  "HOUSE_ID_SET": [0, 0, 0, 0, 0, 0,],
-                  "ESTATE_ID": 0,
-                  "PLAYED_MINUTES": "",
-                  "PLAYED_MINUTES_PERIOD": "",
-                  "CREATED": now.strftime("%Y-%m-%d %H:%M:%S"),
-                  "LAST_LOGIN": now.strftime("%Y-%m-%d %H:%M:%S")}
+        # Fill out our account fields.
+        fields = {"ACCOUNT_AV_SET": ([0, 0, 0, 0, 0, 0,],),
+                  "ACCOUNT_AV_SET_DEL": ([],),
+                  "pirateAvatars": ([0, 0, 0, 0, 0, 0,],),
+                  "HOUSE_ID_SET": ([0, 0, 0, 0, 0, 0,],),
+                  "ESTATE_ID": (0,),
+                  "PLAYED_MINUTES": ("",),
+                  "PLAYED_MINUTES_PERIOD": ("",),
+                  "CREATED": (now.strftime("%Y-%m-%d %H:%M:%S"),),
+                  "LAST_LOGIN": (now.strftime("%Y-%m-%d %H:%M:%S"))}
                  
         # We create an Account
         context = await self.agent.allocate_context()
@@ -353,7 +361,7 @@ class Client(connection.Client):
             
         # Check if the account has the creation date.
         if not self.account.has("CREATED"):
-            self.account.update("CREATED", now.strftime("%Y-%m-%d %H:%M:%S"))
+            self.account.update("CREATED", (now.strftime("%Y-%m-%d %H:%M:%S"),))
             
         # Update our last login time.
         self.account.update("LAST_LOGIN", now.strftime("%Y-%m-%d %H:%M:%S"))
@@ -420,15 +428,15 @@ class Client(connection.Client):
         #now = now.astimezone(tz=pytz.UTC)
 
         # Fill out our account fields.
-        fields = {"ACCOUNT_AV_SET": [0, 0, 0, 0, 0, 0,],
-                  "ACCOUNT_AV_SET_DEL": [],
-                  "pirateAvatars": [0, 0, 0, 0, 0, 0,],
-                  "HOUSE_ID_SET": [0, 0, 0, 0, 0, 0,],
-                  "ESTATE_ID": 0,
-                  "PLAYED_MINUTES": "",
-                  "PLAYED_MINUTES_PERIOD": "",
-                  "CREATED": now.strftime("%Y-%m-%d %H:%M:%S"),
-                  "LAST_LOGIN": now.strftime("%Y-%m-%d %H:%M:%S")}
+        fields = {"ACCOUNT_AV_SET": ([0, 0, 0, 0, 0, 0,],),
+                  "ACCOUNT_AV_SET_DEL": ([],),
+                  "pirateAvatars": ([0, 0, 0, 0, 0, 0,],),
+                  "HOUSE_ID_SET": ([0, 0, 0, 0, 0, 0,],),
+                  "ESTATE_ID": (0,),
+                  "PLAYED_MINUTES": ("",),
+                  "PLAYED_MINUTES_PERIOD": ("",),
+                  "CREATED": (now.strftime("%Y-%m-%d %H:%M:%S"),),
+                  "LAST_LOGIN": (now.strftime("%Y-%m-%d %H:%M:%S"))}
                   
         # We create an Account
         context = await self.agent.allocate_context()
@@ -463,16 +471,12 @@ class Client(connection.Client):
             
         # Check if the account has the creation date.
         if not self.account.has("CREATED"):
-            self.account.update("CREATED", now.strftime("%Y-%m-%d %H:%M:%S"))
+            self.account.update("CREATED", (now.strftime("%Y-%m-%d %H:%M:%S"),))
             
         # Update our last login time.
         self.account.update("LAST_LOGIN", now.strftime("%Y-%m-%d %H:%M:%S"))
                 
         # Calculate the amount of days since our account was created.
-        
-        t = now.strftime("%Y-%m-%d %H:%M:%S")
-        print(f"Current time: {t}")
-        print(f"Current time (strptime): {datetime.strptime(t, "%Y-%m-%d %H:%M:%S")}")
          
         # Get our creation time from the stored date string.
         date_str = self.account.get("CREATED", "")
@@ -538,11 +542,11 @@ class Client(connection.Client):
 
         # OwningAccount is the field used internally for figuring out which 
         # local accounts own the Avatar.
-        fields["OwningAccount"] = self.account.doId
+        fields["OwningAccount"] = (self.account.doId,)
         
         # We currently don't have a way to get a account name from a account,
         # So just leave it as a specialized internal dev one..
-        fields["setAccountName"] = "internal_%s" % str(self.account.doId)
+        fields["setAccountName"] = (f"internal_{self.account.doId}",)
         
         # DISL is an acronym for Disney Integrated Services Layer.
         # This server must of had it's own set of accounts which included names
@@ -551,13 +555,13 @@ class Client(connection.Client):
         
         # The DISL Name is the name of the Disney XD Account (Global Account).
         # We don't know how their names were stored or looked like.
-        fields["setDISLname"] = "unknown"
+        fields["setDISLname"] = ("unknown",)
         # The DISL Id is the id for a Disney XD Account (Global Account).
         # We don't know how any of these look, So we just use our local account ID for now.
-        fields["setDISLid"] = self.account.doId
+        fields["setDISLid"] = (self.account.doId,)
         
-        fields["setDNAString"] = dnaString
-        fields["setPosIndex"] = avPosition
+        fields["setDNAString"] = (dnaString,)
+        fields["setPosIndex"] = (avPosition,)
         
         # We create the avatar.
         context = await self.agent.allocate_context()
@@ -591,8 +595,9 @@ class Client(connection.Client):
         avId = di.getUint32()
 
         # Is that even our avatar?
-        accountAvSet = self.account.get("ACCOUNT_AV_SET", [])
+        accountAvSet = self.account.get("ACCOUNT_AV_SET", ([],))[0]
         if not avId in accountAvSet:
+            print(f"[{self.name}] [WARN]: CLIENT_DELETE_AVATAR passed {avId} that is not in the account list of valid avatars.")
             return
 
         # We remove the avatar from our account.
@@ -628,14 +633,16 @@ class Client(connection.Client):
         
         # Make sure we actually own the avatar.
         avId = di.getUint32()
-        if not avId in self.account.get("ACCOUNT_AV_SET", []):
+        accountAvSet = self.account.get("ACCOUNT_AV_SET", ([],))[0]
+        if not avId in accountAvSet:
+            print(f"[{self.name}] [WARN]: CLIENT_SET_NAME_PATTERN passed {avId} that is not in the account list of valid avatars.")
             await self.disconnect(603, "") # The CLIENT_SET_WISHNAME_CLEAR or CLIENT_SET_NAME_PATTERN has passed a DOID that is not in the account list of valid avatars.
             return
             
         await self.handle_set_name_pattern(avId, di)
             
     async def handle_set_name_pattern(self, avId, di):
-        accountAvSet = self.account.get("ACCOUNT_AV_SET", [])
+        accountAvSet = self.account.get("ACCOUNT_AV_SET", ([],))[0]
         
         # Make sure the avatar is actually loaded.
         avPosition = accountAvSet.index(avId)
@@ -664,7 +671,7 @@ class Client(connection.Client):
         for index in range(4):
             indice, flag = nameIndices[index], nameFlags[index]
             if indice != -1:
-                namePartType, namePart = self.agent.nameDictionary[indice]
+                namePartType, namePart = self.agent.name_dictionary[indice]
                 if flag:
                     namePart = namePart.capitalize()
 
@@ -706,14 +713,18 @@ class Client(connection.Client):
 
             await self.send_message(CLIENT_SET_WISHNAME_RESP, dg)
             return
-
-        if not avId in self.account.get("ACCOUNT_AV_SET", []):
+        
+        accountAvSet = self.account.get("ACCOUNT_AV_SET", ([],))[0]
+        if not avId in accountAvSet:
+            print(f"[{self.name}] [WARN]: CLIENT_SET_WISHNAME passed {avId} that is not in the account list of valid avatars.")
             await self.disconnect(602, "") # The CLIENT_SET_WISHNAME has passed a DOID that is not in the account list of valid avatars.
             return
 
         await self.handle_set_wishname(avId, name, di)
 
     async def handle_set_wishname(self, avId, name, di):
+        accountAvSet = self.account.get("ACCOUNT_AV_SET", ([],))[0]
+        
         # Make sure the avatar is actually loaded.
         avPosition = accountAvSet.index(avId)
         if not self.avatars[avPosition]:
@@ -764,7 +775,7 @@ class Client(connection.Client):
             return
             
         # Make sure we own the avatar we're trying to set ourselves as.
-        if not avId in self.account.get("ACCOUNT_AV_SET", []):
+        if not avId in self.account.get("ACCOUNT_AV_SET", ([],))[0]:
             await self.disconnect(601, "") # The CLIENT_SET_AVATAR has passed a DOID that is not in the account list of valid avatars.
             return
             
@@ -774,6 +785,29 @@ class Client(connection.Client):
             await self.remove_avatar()
             
         await self.set_avatar(avId)
+        
+    async def handle_get_friend_list(self, di):
+        # Client is asking for their friends list.
+        
+        if not self.avatar:
+            await self.disconnect(1, "")
+            return
+            
+        friends_list = self.avatar.get("setFriendsList", ([],))[0]
+        
+        # If we have no friends, Then we can respond quite easily.
+        if len(friends_list) <= 0:
+            dg = Datagram()
+            dg.addUint8(1)
+            await self.send_message(CLIENT_GET_FRIEND_LIST_RESP, dg)
+            return
+        
+        for friend in friends_list:
+            friend_id = friend[0]
+            
+            friend_context = await self.agent.allocate_context()
+            self.db_callbacks[friend_context] = (self.load_friend_db_resp, ())
+            await self.database_request_object("DistributedToon", friend_id, friend_context)
         
     async def handle_add_interest(self, di):
         # Client wants to add or replace an interest
@@ -956,8 +990,10 @@ class Client(connection.Client):
         parentId = di.getUint32()
         zoneId = di.getUint32()
         
+        print(f"{self.get_name()} [DEBUG]: Handling client object location request for {doId} to {parentId}, {zoneId}.")
+        
         if not doId in self.agent.objects:
-            #print("Client tried to move an object that doesn't exist!")
+            print(f"{self.get_name()} [WARN]: Tried to move object {doId} that doesn't exist to {parentId}, {zoneId}.")
             return
             
         object = self.agent.objects[doId]
@@ -966,7 +1002,7 @@ class Client(connection.Client):
         # This will make more sense when Owner View support is added
         # and we change this.
         if not self.avatar or self.avatar.doId != object.doId:
-            #print("Client wants to move an object it doesn't own")
+            print(f"{self.get_name()} [WARN]: Tried to move object {doId} that we don't own to {parentId}, {zoneId}.")
             return
         
         # We tell the State Server that we're moving an object.
@@ -1130,7 +1166,7 @@ class Client(connection.Client):
         # If we didn't get an object. The avatar doesn't exist.
         # Let's remove the invalid avatar from the account.
         if not object:
-            accountAvSet = self.account.get("ACCOUNT_AV_SET", [])
+            accountAvSet = self.account.get("ACCOUNT_AV_SET", ([],))[0]
             accountAvSet[pos] = 0
             self.account.update("ACCOUNT_AV_SET", accountAvSet)
         else:
@@ -1197,16 +1233,18 @@ class Client(connection.Client):
         
         # Make sure all of our avatars are loaded in.
         wait = await self.load_avatar_list(self.set_avatar, (avId))
-        if wait: return
+        if wait:
+            print(f"{self.get_name()} [DEBUG]: Waiting on avatar list in set_avatar()")
+            return
         
-        accountAvSet = self.account.get("ACCOUNT_AV_SET", [])
+        accountAvSet = self.account.get("ACCOUNT_AV_SET", ([],))[0]
         avPosition = accountAvSet.index(avId)
         
         avatar = self.avatars[avPosition]
         
         # Put our avatar on the ClientAgent ahead of time.
         # This will allow us to recieve the generate as an update to the object.
-        self.agents.objects[avatar.doId] = avatar
+        self.agent.objects[avatar.doId] = avatar
         
         self.generate_callbacks[avatar.doId] = (self.set_avatar_finish, (avPosition))
         
@@ -1270,6 +1308,8 @@ class Client(connection.Client):
         # Grab the fields we may need from the avatar before we delete it.
         avatarDoId = self.avatar.doId
         
+        friendsList = self.avatar.get("setFriendsList", ([],))[0]
+        
         # Remove the avatar locally.
         del self.avatar
         self.avatar = None
@@ -1282,8 +1322,6 @@ class Client(connection.Client):
             self.avatar_deleted = True # This a mark to prevent resending a delete to the StateServer.
         
         # If we have friends... We should probably let them know we're heading off.
-        
-        friendsList = self.avatar.get("setFriendsList", ([],))[0]
 
         # Get all of our friend ids.
         friendIds = []
@@ -1303,15 +1341,15 @@ class Client(connection.Client):
             await client.send_message(CLIENT_FRIEND_OFFLINE, dg)
     
     async def receive_create(self, do, sender, other):
-        # We send the object creation if we're the owner or if we're interested.
-        is_interested = await self.has_interest(do.parentId, do.zoneId)
-        if not is_interested and not self.is_owner(do):
-            return
-            
         # Call our generate callback if we have one.
         if do.doId in self.generate_callbacks:
             callback, args = self.generate_callbacks[do.doId]
             await callback(do, args)
+            
+        # We send the object creation if we're the owner or if we're interested.
+        is_interested = await self.has_interest(do.parentId, do.zoneId)
+        if not is_interested and not self.is_owner(do):
+            return
             
         # Don't echo the message.
         if self.avatar and self.avatar.doId == sender:
@@ -1484,7 +1522,7 @@ class Client(connection.Client):
             
         return_code = di.get_uint8()
         if return_code != 0:
-            print(f"{self.get_name()}: Failed to receive database object {doId} in context '{context}' with error code {return_code}")
+            print(f"{self.get_name()} [WARN]: Failed to receive database object {doId} in context '{context}' with error code {return_code}")
             if context in self.db_callbacks:
                 del self.db_callbacks[context]
             if context in self.db_callback_objects:
@@ -1678,7 +1716,7 @@ class Client(connection.Client):
                 packer.beginPack(field)
                 # Pack the field.
                 if field_name in fields:
-                    field.packArgs(packer, (fields[field_name],))
+                    field.packArgs(packer, fields[field_name][0])
                 else:
                     packer.packDefaultValue()
                 # Packing over.
@@ -2213,6 +2251,9 @@ class Client(connection.Client):
     async def register_for_puppet_channel(self, channel, puppetType):
         puppet_channel = self.get_puppet_channel(channel, puppetType)
         
+        if puppet_channel in self.__channels:
+            return 
+        
         self.__channels.add(puppet_channel)
         # Ask our agent to register the puppet channel for us.
         await self.agent.register_for_channel(channel)
@@ -2220,6 +2261,9 @@ class Client(connection.Client):
     async def unregister_for_puppet_channel(self, channel, puppetType):
         puppet_channel = self.get_puppet_channel(channel, puppetType)
         
+        if not puppet_channel in self.__channels:
+            return 
+
         self.__channels.remove(puppet_channel)
         # Ask our agent to unregister the puppet channel for us.
         await self.agent.unregister_for_channel(channel)
@@ -2239,4 +2283,4 @@ class Client(connection.Client):
             return f"[{self.name} - {addr[0]}:{addr[1]} ({self.account.doId})]"
         elif addr != None:
             return f"[{self.name} - {addr[0]}:{addr[1]}]"
-        return f"[self.name]"
+        return f"[{self.name}]"

@@ -1,33 +1,43 @@
-import asyncio, socket, struct, time, traceback
+import asyncio, functools, socket, struct, time, traceback
 
 from panda3d.core import Datagram, DatagramIterator
+from panda3d.core import BufferedDatagramConnection, SocketAddress, SocketTCPListen
 
-class Client:
-    READ_IN_KiB = 16
-    READ_IN = READ_IN_KiB * 1024
+def blocking_execute(f):
+    @functools.wraps(f)     
+    async def inner(*args, **kwargs):         
+        loop = asyncio.get_running_loop()        
+        return await loop.run_in_executor(None, lambda: f(*args, **kwargs))     
+    return inner
+
+class Connection:
+    '''
+    This class manages the underlying connection for a Client or Server and its Clients.
+    It's not reccomended to use this class directly and instead use the Client or Server classes instead.
+    '''
+    
+    READ_BUFF_KB = 4096
+    READ_BUFF = READ_BUFF_KB * 1000
+    WRITE_BUFF_KB = 4096
+    WRITE_BUFF = WRITE_BUFF_KB * 1000
+    WRITE_FLUSH_POINT = 1400
+    BACKLOG = 2800
     
     def __init__(self):
-        self.writer = None
-        self.reader = None
-        self.buffer = bytearray()
+        self.address = None
+        self.bufferconn = None
         self.closed = True
-        
-        self.timeout_task = None
-        self.timeout_period = 20
-        
-        self.set_name("CLIENT")
+        self.listener = None
+        self.server_address = None
+        self.server_closed = True
+        self.name = "NONE"
+        self.datagrams = []
         
     @classmethod
-    async def initialize(cls, addr, port):
+    async def from_server(cls, bufferconn, address):
         self = cls()
-        await self.connect(addr, port)
-        return self
-    
-    @classmethod
-    async def from_server(cls, reader, writer):
-        self = cls()
-        self.reader = reader
-        self.writer = writer
+        self.bufferconn = bufferconn
+        self.address = address
         self.closed = False
         return self
         
@@ -35,54 +45,123 @@ class Client:
         if not self.closed:
             return True # Already connected.
 
-        self.reader, self.writer = await asyncio.open_connection(addr, port)
-        if not self.reader or not self.writer:
-            return False # Failed to connect.
-            
-        self.closed = False
-        return True # Connected successfully.
+        self.address = SocketAddress(port)
+        self.address.set_host(addr, port)
         
+        self.bufferconn = BufferedDatagramConnection(self.READ_BUFF, self.WRITE_BUFF, self.WRITE_FLUSH_POINT)
+        self.bufferconn.Reset()
+        self.bufferconn.ClearAddresses()
+        self.bufferconn.AddAddress(self.address)
+        if not self.bufferconn.DoConnect():
+            raise RuntimeError(f"Address '{self.address.get_ip_port()}' isn't valid or open for connection or is already in use by another application or connection.")
+            return False
+        
+        connected = self.bufferconn.IsConnected()
+        self.closed = not connected
+        return connected
+
+    async def listen(self, port, ipv6=False):
+        self.server_address = SocketAddress(port)
+        self.server_address.set_any_IP(port)
+        if ipv6:
+            self.server_address.set_any_IPv6(port)
+        
+        self.listener = SocketTCPListen()
+        if ipv6:
+            self.listener.SetV6Only(False)
+            
+        listening = self.listener.OpenForListen(self.server_address, self.BACKLOG)
+        if listening:
+            self.listener.SetNonBlocking()
+            self.server_closed = False
+
+        return listening
+
     async def close(self):
+        if self.closed and self.server_closed:
+            return
+
+        if self.bufferconn:
+            self.bufferconn.Reset()
+            self.bufferconn.ClearAddresses()
+        
+        if self.listener:
+            self.listener.Close()
+            
+        self.closed = True
+        self.server_closed = True
+            
+        del self.address
+        self.address = None
+
+        del self.server_address
+        self.server_address = None
+            
+        del self.bufferconn
+        self.bufferconn = None
+        
+        del self.listener
+        self.listener = None
+        
+        del self.datagrams
+        self.datagrams = []
+        
+    def read_datagram(self):
+        if not self.bufferconn:
+            return False
+            
+        dg = Datagram()
+        if not self.bufferconn.GetMessage(dg):
+            return False
+            
+        self.datagrams.append(dg)
+        return True
+        
+    async def read_datagrams(self):
         if self.closed:
             return
-        
-        self.timeout_task = None
 
-        if self.writer:
-            try:
-                self.writer.close()
-                await self.writer.wait_closed()
-            except ConnectionResetError as e:
-                pass
+        while self.read_datagram():
+            continue
             
-        del self.buffer
-        self.buffer = bytearray()
-        del self.reader
-        self.reader = None
-        del self.writer
-        self.writer = None
-        
-        self.closed = True
+        for dg in self.datagrams:
+            await self.receive_datagram(dg)
 
-    async def read(self, n):
-        if self.closed:
+        self.datagrams = []
+        
+    async def receive_datagram(self, dg):
+        return
+            
+    async def send_datagram(self, dg):
+        if self.closed or not self.bufferconn:
+            return False
+
+        return self.bufferconn.SendMessage(dg)
+        
+    @blocking_execute
+    def accept_incoming_connection(self):
+        if not self.listener:
             return None
-            
-        data = await self.reader.read(n)
-        return data
+        address = SocketAddress(0)
+        bufferconn = BufferedDatagramConnection(self.READ_BUFF, self.WRITE_BUFF, self.WRITE_FLUSH_POINT)
+        if not self.listener.GetIncomingConnection(bufferconn, address):
+            return None
+        bufferconn.SetNoDelay(True)
+        bufferconn.SetNonBlocking()
+        return (address, bufferconn)
         
-    async def write(self, data):
-        if self.closed or not self.writer:
-            return False
-            
-        try:
-            self.writer.write(data)
-            #await self.writer.drain()
-            #await asyncio.sleep(0)
-            return True
-        except:
-            return False
-            
+    def get_address(self):
+        if self.closed or not self.address:
+            return None
+
+        return (self.address.get_ip(), self.address.get_port())
+        
+    def get_server_address(self):
+        if self.server_closed or not self.server_address:
+            return None
+
+        return (self.server_address.get_ip(), self.server_address.get_port())
+        
     def set_name(self, name):
         self.name = name
         
@@ -91,52 +170,61 @@ class Client:
         
     def is_closed(self):
         return self.closed
-   
-    def get_address(self):
-        if self.closed:
-            return None
+        
+    def is_server_closed(self):
+        return self.server_closed
 
-        return self.writer.get_extra_info('peername')
-            
-    async def writer_drain(self):
-        if self.closed or not self.writer:
-            return
-
-        await self.writer.drain()
+class Client(Connection):
+    def __init__(self):
+        super().__init__()
         
-    async def receive_data(self, data):
-        if self.closed:
-            return
-            
-        self.buffer += data
-        while len(self.buffer) >= 2:
-            length = struct.unpack("<H", self.buffer[:2])[0]
-            if len(self.buffer) < length + 2:
-                break
-                
-            packet = self.buffer[2:length + 2]
-            self.buffer = self.buffer[length + 2:]
-            
-            await self.receive_datagram(Datagram(bytes(packet)))
+        self.timeout_period = 0
+        self.set_name("CLIENT")
         
-    async def send_data(self, data):
-        return await self.write(data)
-        
-    async def receive_datagram(self, dg):
-        return
-        
-    async def send_datagram(self, dg):
-        if self.closed:
-            return False
-
-        buffer = bytearray()
-        buffer += struct.pack("<H", dg.getLength())
-        buffer += bytes(dg)
-        return await self.send_data(bytes(buffer))
+    @classmethod
+    async def initialize(cls, addr, port):
+        self = cls()
+        await self.connect(addr, port)
+        return self
         
     async def handle_lost_connection(self):
         await self.close()
+            
+    async def drain_interface(self):
+        if self.closed or not self.bufferconn:
+            return False
+        return self.bufferconn.Flush()
+            
+    async def drain_interface_routine(self):
+        while True:
+            try:
+                # Write out all of the data for all of our clients.
+                await self.drain_interface()
+                await asyncio.sleep(0.05)
+                if self.closed: break
+            except asyncio.CancelledError as e:
+                break
+            except KeyboardInterrupt as e:
+                break
+            except Exception as e:
+                traceback.print_exception(e)
         
+    async def flush_interface(self):
+        await self.read_datagrams()
+        
+    async def flush_interface_routine(self):
+        while True:
+            try:
+                await self.flush_interface()
+                await asyncio.sleep(0.05)
+                if self.closed: break
+            except asyncio.CancelledError as e:
+                break
+            except KeyboardInterrupt as e:
+                break
+            except Exception as e:
+                traceback.print_exception(e)
+                
     async def timeout(self):
         try:
             # Wait for our timeout period.
@@ -154,100 +242,35 @@ class Client:
             pass
         except Exception as e:
             traceback.print_exception(e)
-            
-    async def drain_interface_routine(self):
-        while (not self.closed):
-            try:
-                # Write out all of the data for all of our clients.
-                await self.writer_drain()
-                await asyncio.sleep(0.05)
-            except asyncio.CancelledError as e:
-                break
-            except KeyboardInterrupt as e:
-                break
-            except Exception as e:
-                traceback.print_exception(e)
-        
-    async def flush_interface(self):
-        try:
-            data = await self.read(self.READ_IN)
-        except Exception as e:
-            data = None
-        
-        if not data:
-            if self.timeout_task: return
-            
-            # We have no data for whatever reason,
-            # Create a timeout task for the client to drop with.
-            self.timeout_task = asyncio.create_task(self.timeout(), name=f"{self.get_name()}-timeout")
-            return
-        elif self.timeout_task != None:
-            # Cancel the disconnection task, We got data.
-            self.timeout_task.cancel()
-            self.timeout_task = None
-        
-        await self.receive_data(data)
-        
-    async def flush_interface_routine(self):
-        while True:
-            try:
-                await self.flush_interface()
-                await asyncio.sleep(0.05)
-                if self.closed: break
-            except asyncio.CancelledError as e:
-                break
-            except KeyboardInterrupt as e:
-                break
-            except Exception as e:
-                traceback.print_exception(e)
         
     drain_routine = drain_interface_routine
     flush = flush_interface
     flush_routine = flush_interface_routine
         
-class Server:
+class Server(Connection):
     client_cls = Client
     
-    READ_IN_KiB = 256
-    READ_IN = READ_IN_KiB * 1024
-    
-    def __init__(self, addr, port):
-        self.addr = addr
-        self.port = port
-
-        self.server = None
+    def __init__(self):
+        super().__init__()
         self.clients = []
-        
-        self.server_closed = True
-        
-        self.name = "SERVER"
+        self.set_name("SERVER")
         
     @classmethod
-    async def initialize(cls, addr, port):
-        if not self.server_closed:
-            return
-
-        self = cls(addr, port)
-        await self.start()
+    async def initialize(cls, port):
+        self = cls()
+        await self.start(port)
         return self
         
-    async def start(self):
+    async def start(self, port=0):
         if not self.server_closed:
             return
             
-        self.server = await asyncio.start_server(self.handle_client, self.addr, self.port, start_serving=False, limit=self.READ_IN+256)
+        await self.listen(port)
         self.server_closed = False
         
     async def close(self):
         if self.server_closed:
             return
-
-        if self.server:
-            self.server.close()
-            await self.server.wait_closed()
-            
-            del self.server
-            self.server = None
             
         for i in range(0, len(self.clients)):
             client = self.clients[i]
@@ -263,8 +286,8 @@ class Server:
         
         self.server_closed = True
 
-    async def handle_client(self, reader, writer):
-        client = await self.client_cls.from_server(reader, writer)
+    async def handle_client(self, bufferconn, address):
+        client = await self.client_cls.from_server(bufferconn, address)
         self.clients.append(client)
         
         addr = client.get_address()
@@ -312,24 +335,7 @@ class Server:
             traceback.print_exception(e)
         
     async def flush_client(self, client):
-        try:
-            data = await client.read(self.READ_IN)
-        except Exception as e:
-            data = None
-
-        if not data:
-            if client.timeout_task: return
-            
-            # We have no data for whatever reason,
-            # Create a timeout task for the client to drop with.
-            client.timeout_task = asyncio.create_task(self.client_timeout(client), name=f"{client.get_name()}-timeout")
-            return
-        elif client.timeout_task != None:
-            # Cancel the disconnection task, We got data.
-            client.timeout_task.cancel()
-            client.timeout_task = None
-        
-        await client.receive_data(data)
+        await client.read_datagrams()
         
     async def flush_server(self):
         # Iterate all of our clients and receive data for them.
@@ -358,13 +364,34 @@ class Server:
                 traceback.print_exception(e)
         
     async def drain_client(self, client):
-        await client.writer_drain()
+        await client.drain_interface()
         
     async def drain_server_routine(self):
-        while (not self.server_closed):
+        while True:
             try:
                 # Write out all of the data for all of our clients.
                 await asyncio.gather(*map(self.drain_client, self.clients))
+                await asyncio.sleep(0.05)
+                if self.server_closed: break
+            except asyncio.CancelledError as e:
+                break
+            except KeyboardInterrupt as e:
+                break
+            except Exception as e:
+                traceback.print_exception(e)
+                
+    async def listen_routine(self):
+        # Try and get all of the incoming connections.
+        while True:
+            try:
+                if self.server_closed: break
+                
+                connection = await self.accept_incoming_connection()
+                if connection:
+                    address, bufferconn = connection
+                    await self.handle_client(bufferconn, address)
+                    
+                self.pending_connections = []
                 await asyncio.sleep(0.05)
             except asyncio.CancelledError as e:
                 break
@@ -372,12 +399,6 @@ class Server:
                 break
             except Exception as e:
                 traceback.print_exception(e)
-
-    def set_name(self, name):
-        self.name = name
-        
-    def get_name(self):
-        return self.name
 
     drain_routine = drain_server_routine
     flush = flush_server
